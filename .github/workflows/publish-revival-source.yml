@@ -24,8 +24,6 @@ jobs:
         run: |
           tar -xzf .github/workflows/revival-source.tar.gz
           rm -f android/assets/res
-          rm -f .github/workflows/publish-revival-source.yml
-          rm -f .github/workflows/revival-source.tar.gz
 
       - name: Commit source snapshot
         run: |
@@ -34,12 +32,3 @@ jobs:
           git add -A
           git commit -m "Publish precise timing Android revival"
           git push origin HEAD:agent/precise-timing-revival
-
-      - name: Remove publisher from default branch
-        run: |
-          git fetch origin master
-          git switch -C master origin/master
-          git rm .github/workflows/publish-revival-source.yml
-          git rm .github/workflows/revival-source.tar.gz
-          git commit -m "Remove one-time revival publisher"
-          git push origin master

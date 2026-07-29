@@ -1,0 +1,55 @@
+Port osu!stable's spinner requirements and grading to opsu!.
+
+Upstream opsu! used a hand-measured approximation carrying its own
+"TODO not correct at all, but close enough?" and "TODO: verify ratios"
+comments:
+
+	float spinsPerMinute = 100 + (overallDifficulty * 15);
+
+That is roughly 2.9 rotations per second at OD 5 and 4.2 at OD 10.
+osu!stable requires a sustained 3 rot/s at OD 0, 5 rot/s at OD 5 and
+7.5 rot/s at OD 10, so opsu! spinners cleared far too easily -- often
+with bonus score to spare on maps where stable would award a 100.
+
+Grading is also absolute in stable rather than ratio based: a full
+clear is a 300, one rotation short is a 100 and two short is a 50.
+The on-screen spinner meter still uses rotations / rotationsNeeded and
+is unaffected.
+
+diff --git a/src/itdelatrisu/opsu/objects/Spinner.java b/src/itdelatrisu/opsu/objects/Spinner.java
+--- a/src/itdelatrisu/opsu/objects/Spinner.java
++++ b/src/itdelatrisu/opsu/objects/Spinner.java
+@@ -196,8 +196,10 @@
+ 		maxStoredDeltaAngles = Utils.clamp((hitObject.getEndTime() - hitObject.getTime() - minTime)
+ 				* (maxVel - minVel) / (maxTime - minTime) + minVel, minVel, maxVel);
+ 		storedDeltaAngle = new float[maxStoredDeltaAngles];
+ 
+-		// calculate rotations needed
+-		float spinsPerMinute = 100 + (overallDifficulty * 15);
+-		rotationsNeeded = spinsPerMinute * (hitObject.getEndTime() - hitObject.getTime()) / 60000f;
++		// calculate rotations needed
++		// osu!stable requires a sustained spin rate of 3 (OD 0), 5 (OD 5) or
++		// 7.5 (OD 10) rotations per second for the length of the spinner.
++		float spinsPerSecond = (float) Utils.mapDifficultyRange(overallDifficulty, 3f, 5f, 7.5f);
++		rotationsNeeded = spinsPerSecond * (hitObject.getEndTime() - hitObject.getTime()) / 1000f;
+ 	}
+@@ -272,14 +274,14 @@
+ 	private int hitResult() {
+-		// TODO: verify ratios
++		// osu!stable grades spinners on absolute rotation count rather than a
++		// ratio: a full clear is a 300, one rotation short a 100, two short a 50.
+ 		int result;
+-		float ratio = rotations / rotationsNeeded;
+-		if (ratio >= 1.0f || GameMod.AUTO.isActive() || GameMod.AUTOPILOT.isActive() || GameMod.SPUN_OUT.isActive()) {
++		if (rotations >= rotationsNeeded || GameMod.AUTO.isActive() || GameMod.AUTOPILOT.isActive() || GameMod.SPUN_OUT.isActive()) {
+ 			result = GameData.HIT_300;
+ 			if (!Options.isGameplaySoundDisabled())
+ 				SoundController.playSound(SoundEffect.SPINNEROSU);
+-		} else if (ratio >= 0.9f)
++		} else if (rotations >= rotationsNeeded - 1f)
+ 			result = GameData.HIT_100;
+-		else if (ratio >= 0.75f)
++		else if (rotations >= rotationsNeeded - 2f)
+ 			result = GameData.HIT_50;
+ 		else
+ 			result = GameData.HIT_MISS;

@@ -1,0 +1,43 @@
+Port osu!stable's fade-in and Hidden mod fade timings to opsu!.
+
+Both values were explicitly marked TODO in upstream opsu!:
+
+	fadeInTime = Math.min(375, (int) (approachTime / 2.5f));  // TODO: formula
+	hiddenDecayTime = (int) (approachTime / 3.6f);             // TODO
+	hiddenTimeDiff = (int) (approachTime / 3.3f);              // TODO
+
+osu!stable fades hit objects in over 400ms, only shortening that once
+the preempt time itself falls below 450ms.  At AR 9 (600ms preempt)
+opsu! was fading in over 240ms instead of 400ms, so objects appeared
+noticeably later and harder than in stable.
+
+The Hidden windows are fractions of the preempt time: objects finish
+fading in after 0.4 * preempt, then decay over 0.3 * preempt, leaving
+them fully invisible with 0.3 * preempt still remaining.  Circle.draw
+reads hiddenTimeDiff as "time remaining when fully invisible" and
+hiddenDecayTime as the decay duration, so both become 0.3 * preempt.
+
+diff --git a/src/itdelatrisu/opsu/states/Game.java b/src/itdelatrisu/opsu/states/Game.java
+--- a/src/itdelatrisu/opsu/states/Game.java
++++ b/src/itdelatrisu/opsu/states/Game.java
+@@ -1390,10 +1390,14 @@
+ 		data.calculateDifficultyMultiplier(beatmap.HPDrainRate, beatmap.circleSize, beatmap.overallDifficulty);
+ 
+-		// hit object fade-in time (TODO: formula)
+-		fadeInTime = Math.min(375, (int) (approachTime / 2.5f));
++		// hit object fade-in time
++		// osu!stable fades objects in over 400ms, shortened proportionally once
++		// the preempt time itself drops below 450ms (AR 10+ with DoubleTime).
++		fadeInTime = (int) (400f * Math.min(1f, approachTime / 450f));
+ 
+-		// fade times ("Hidden" mod)
+-		// TODO: find the actual formulas for this
+-		hiddenDecayTime = (int) (approachTime / 3.6f);
+-		hiddenTimeDiff = (int) (approachTime / 3.3f);
++		// fade times ("Hidden" mod)
++		// osu!stable expresses these as fractions of the preempt time: objects
++		// finish fading in after 0.4 * preempt, then decay over 0.3 * preempt,
++		// and are fully invisible with 0.3 * preempt still remaining.
++		hiddenDecayTime = (int) (approachTime * 0.3f);
++		hiddenTimeDiff = (int) (approachTime * 0.3f);
+ 	}

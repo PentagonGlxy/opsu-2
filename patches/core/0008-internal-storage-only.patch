@@ -1,0 +1,124 @@
+Subject: [PATCH] Store all user files in internal storage only
+
+fluddokt.opsu.fake.File is the abstraction every core path goes through, and
+its constructor preferred Gdx.files.external(...) on any non-desktop platform.
+libGDX maps external to Environment.getExternalStorageDirectory() on Android,
+so beatmaps, skins, replays, screenshots, opsu.cfg and opsu.log all landed on
+shared storage and needed runtime permissions.
+
+Gdx.files.local maps to Context.getFilesDir() on Android and to the working
+directory on desktop, so switching to local satisfies the internal-storage
+requirement on mobile without breaking the desktop or iOS builds.
+
+Absolute paths are still honoured when they already exist, because opsu.cfg
+persists absolute directory paths (BeatmapDirectory and friends) that older
+external-storage builds wrote. StorageMigration clears those, but they must
+not break before migration runs.
+---
+ a/src/fluddokt/opsu/fake/File.java | 59 ++++-------------------------
+ 1 file changed, 12 insertions(+), 47 deletions(-)
+
+diff --git a/src/fluddokt/opsu/fake/File.java b/src/fluddokt/opsu/fake/File.java
+--- a/src/fluddokt/opsu/fake/File.java
++++ b/src/fluddokt/opsu/fake/File.java
+@@ -15,59 +15,31 @@
+ 	public static final String separator = "/";
+ 	FileHandle fh;
+ 
+ 	public File(String name) {
+-		System.out.println("File: "+name);
+-		if (Gdx.app.getType() == ApplicationType.Desktop)
+-			fh = Gdx.files.local(name);
+-		else
+-			fh = Gdx.files.external(name);
+-		if (fh.exists()) {
+-			System.out.println("new file:"+info());
+-			return;
+-		}
+-		
+-		if(Gdx.files.isExternalStorageAvailable()){
+-			fh = Gdx.files.external(name);
+-		} else if(Gdx.files.isLocalStorageAvailable()){
+-			fh = Gdx.files.local(name);
+-		} else {
+-			//no storage available ...
+-		}
+-		if (fh.exists()) {
+-			System.out.println("new file:"+info());
+-			return;
+-		}
+-		
+-		fh = Gdx.files.absolute(name);
+-		if (fh.exists()) {
+-			System.out.println("new file:"+info());
+-			return;
+-		}
+-		
+-		/*try {
+-			fh = Gdx.files.internal(name);
+-			if (fh.exists()) {
+-				System.out.println("new file:"+info());
+-				return;
+-			}
+-		} catch (Exception e) {
+-			System.out.println("new File Internal Fail: "+name+" "+e);
+-			//e.printStackTrace();
+-		}*/
+-		
+-		if (Gdx.app.getType() == ApplicationType.Desktop)
+-			fh = Gdx.files.local(name);
+-		else{
+-			if(Gdx.files.isExternalStorageAvailable()){
+-				fh = Gdx.files.external(name);
+-			} else if(Gdx.files.isLocalStorageAvailable()){
+-				fh = Gdx.files.local(name);
+-			} else {
+-				//no storage available ...
+-			}
+-		}
+-		System.out.println("new nonexist file:"+info());
+-		
++		// Internal-storage-only policy (opsu-2 revival).
++		//
++		// libGDX maps Gdx.files.local(...) to Context.getFilesDir() on Android
++		// and to the working directory on desktop, so "local" is the correct
++		// target on every platform this project ships. External storage is
++		// never consulted: it needs runtime permissions, is world-readable,
++		// vanishes when an SD card is unmounted, and is unavailable under
++		// scoped storage.
++		fh = Gdx.files.local(name);
++		if (fh.exists())
++			return;
++
++		// Absolute paths are still honoured when they already exist, because
++		// opsu.cfg persists absolute directory paths (BeatmapDirectory and
++		// friends) that may have been written by an older external-storage
++		// build. Migration clears those, but tolerate them until it runs.
++		FileHandle absolute = Gdx.files.absolute(name);
++		if (absolute.exists()) {
++			fh = absolute;
++			return;
++		}
++
++		// Nonexistent: keep the internal handle so creation lands internally.
++		fh = Gdx.files.local(name);
+ 	}
+ 
+ 	public File(FileHandle nfh) {
+@@ -215,11 +215,8 @@
+ 		return newlist;
+ 	}
+ 
+-	public boolean isExternal() {
+-		return fh.type() == FileType.External|| 
+-				(
+-					fh.type() == FileType.Absolute 
+-					&& fh.path().contains(Gdx.files.getExternalStoragePath())
+-				);
+-	}
++	public boolean isExternal() {
++		// Nothing is stored externally any more; see the constructor.
++		return false;
++	}
+ 
+ 	public long length() {

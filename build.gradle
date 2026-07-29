@@ -33,6 +33,9 @@ tasks.register("applyCorePatches") {
         patches.sort { a, b -> a.name <=> b.name }
 
         patches.each { patchFile ->
+            // Stage 1: git apply. Strict about context, so this stays the
+            // preferred path and keeps the existing patches behaving exactly as
+            // they do today.
             def checkOutput = new ByteArrayOutputStream()
             def canApply = exec {
                 workingDir coreDir
@@ -48,23 +51,65 @@ tasks.register("applyCorePatches") {
                     commandLine "git", "apply", "--ignore-space-change", patchFile.absolutePath
                 }
                 logger.lifecycle("Applied core patch: ${patchFile.name}")
-            } else {
-                def reverseCheckOutput = new ByteArrayOutputStream()
-                def alreadyApplied = exec {
-                    workingDir coreDir
-                    commandLine "git", "apply", "--reverse", "--check", "--ignore-space-change", patchFile.absolutePath
-                    ignoreExitValue true
-                    standardOutput = reverseCheckOutput
-                    errorOutput = reverseCheckOutput
-                }
-                if (alreadyApplied.exitValue != 0) {
-                    throw new GradleException(
-                        "Core patch does not apply cleanly: ${patchFile.name}\n" +
-                        checkOutput.toString("UTF-8") +
-                        reverseCheckOutput.toString("UTF-8")
-                    )
-                }
+                return
             }
+
+            // Stage 2: is it already applied? That is a no-op, not a failure,
+            // which keeps the task safe to re-run against a dirty checkout.
+            def reverseCheckOutput = new ByteArrayOutputStream()
+            def alreadyApplied = exec {
+                workingDir coreDir
+                commandLine "git", "apply", "--reverse", "--check", "--ignore-space-change", patchFile.absolutePath
+                ignoreExitValue true
+                standardOutput = reverseCheckOutput
+                errorOutput = reverseCheckOutput
+            }
+            if (alreadyApplied.exitValue == 0) {
+                logger.lifecycle("Skipped core patch (already applied): ${patchFile.name}")
+                return
+            }
+
+            // Stage 3: GNU patch. It searches the file for the hunk context
+            // instead of insisting on a match at the declared line, and --fuzz
+            // lets it drop context lines that have drifted. Rejects are
+            // discarded and backups suppressed so a failed fallback cannot
+            // leave .orig/.rej files behind in the submodule.
+            def fuzzyArgs = [
+                "patch", "-p1",
+                "--forward",
+                "--fuzz=2",
+                "--ignore-whitespace",
+                "--no-backup-if-mismatch",
+                "-r", "-",
+                "-i", patchFile.absolutePath
+            ]
+            def fuzzyOutput = new ByteArrayOutputStream()
+            def fuzzyCheck = exec {
+                workingDir coreDir
+                commandLine fuzzyArgs + ["--dry-run"]
+                ignoreExitValue true
+                standardOutput = fuzzyOutput
+                errorOutput = fuzzyOutput
+            }
+            if (fuzzyCheck.exitValue == 0) {
+                exec {
+                    workingDir coreDir
+                    commandLine fuzzyArgs
+                }
+                // Labelled so a fuzzy apply is never mistaken for a clean one.
+                logger.lifecycle("Applied core patch (fuzzy): ${patchFile.name}")
+                return
+            }
+
+            throw new GradleException(
+                "Core patch does not apply cleanly: ${patchFile.name}\n" +
+                "-- git apply --check --\n" +
+                checkOutput.toString("UTF-8") +
+                "-- git apply --reverse --check --\n" +
+                reverseCheckOutput.toString("UTF-8") +
+                "-- patch --dry-run --\n" +
+                fuzzyOutput.toString("UTF-8")
+            )
         }
     }
 }

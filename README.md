@@ -53,6 +53,26 @@ silently changing or depending on write access to the upstream submodule.
 - 32-bit and 64-bit ARM/x86 native libraries.
 - Runtime storage-permission handling with app-private storage fallback.
 
+## osu!stable gameplay fidelity
+
+Several gameplay formulas in upstream opsu! were approximations, some of them
+explicitly marked `TODO`.  These have been replaced with the osu!stable
+behaviour:
+
+- No early-miss window.  A press outside the 50 window is discarded instead of
+  breaking combo, matching stable's shake behaviour.
+- Strict in-order note lock, restoring stable's "shielding" on stacks and
+  streams.
+- Stable's fade-in formula, `400 * min(1, preempt / 450)`, instead of
+  `min(375, preempt / 2.5)`.
+- Hidden mod fades derived from the preempt time rather than guessed divisors.
+- Spinners requiring stable's 3/5/7.5 rotations per second at OD 0/5/10, graded
+  on absolute rotation count instead of ratio thresholds.
+
+See [docs/osu-stable-fidelity.md](docs/osu-stable-fidelity.md) for the full
+divergence analysis, including what is still outstanding (sliders, Hidden
+fade-in duration, scoring and HP drain).
+
 ## License
 **This software is licensed under GNU GPL version 3.**
 You can find the full text of the license [here](LICENSE).

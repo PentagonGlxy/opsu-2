@@ -25,7 +25,7 @@ ext {
 
 tasks.register("applyCorePatches") {
     group = "build setup"
-    description = "Applies opsu! Android revival patches to the pinned core submodule."
+    description = "Applies opsu! Android revival patches and overlays to the pinned core submodule."
 
     doLast {
         def coreDir = file("core")
@@ -110,6 +110,31 @@ tasks.register("applyCorePatches") {
                 "-- patch --dry-run --\n" +
                 fuzzyOutput.toString("UTF-8")
             )
+        }
+
+        // Whole-file overlays, applied AFTER the patches.
+        //
+        // A context diff is the wrong tool for a file we effectively own: it can
+        // fail for reasons that are hard to diagnose, and it fails at build time
+        // rather than review time. core-overlay/ mirrors the core source tree and
+        // its files simply replace their counterparts, so there is no context to
+        // match and nothing to drift.
+        //
+        // Correctness relies on no patch touching an overlaid file. That holds
+        // today: 0001-0010 never touch MainMenu.java. If that ever changes, the
+        // overlay silently wins, so prefer a patch for shared files and reserve
+        // overlays for sources this project fully controls.
+        def overlayDir = file("core-overlay")
+        if (overlayDir.isDirectory()) {
+            def overlaid = fileTree(dir: overlayDir).files.toList()
+            copy {
+                from overlayDir
+                into coreDir
+            }
+            overlaid.each { overlayFile ->
+                def relative = overlayDir.toURI().relativize(overlayFile.toURI()).path
+                logger.lifecycle("Applied core overlay: ${relative}")
+            }
         }
     }
 }

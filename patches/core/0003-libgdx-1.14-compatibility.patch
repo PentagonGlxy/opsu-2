@@ -1,0 +1,238 @@
+diff --git a/src/fluddokt/opsu/fake/AppGameContainer.java b/src/fluddokt/opsu/fake/AppGameContainer.java
+index ee7eb0fb..d918c601 100644
+--- a/src/fluddokt/opsu/fake/AppGameContainer.java
++++ b/src/fluddokt/opsu/fake/AppGameContainer.java
+@@ -21,7 +21,10 @@ public class AppGameContainer extends GameContainer {
+ 		AppGameContainer.containerWidth = containerWidth;
+ 		AppGameContainer.containerHeight = containerHeight;
+ 
+-		Gdx.graphics.setDisplayMode(containerWidth, containerHeight, b);
++		if (b)
++			Gdx.graphics.setFullscreenMode(Gdx.graphics.getDisplayMode());
++		else
++			Gdx.graphics.setWindowedMode(containerWidth, containerHeight);
+ 		width = Gdx.graphics.getWidth();
+ 		height = Gdx.graphics.getHeight();
+ 	}
+diff --git a/src/fluddokt/opsu/fake/Display.java b/src/fluddokt/opsu/fake/Display.java
+index 4cdec69e..a9900b99 100644
+--- a/src/fluddokt/opsu/fake/Display.java
++++ b/src/fluddokt/opsu/fake/Display.java
+@@ -12,7 +12,7 @@ public class Display {
+ 	static Resolution deskRes;
+ 	public static Resolution getDesktopDisplayMode() {
+ 		if(deskRes == null) {
+-			DisplayMode d = Gdx.graphics.getDesktopDisplayMode();
++			DisplayMode d = Gdx.graphics.getDisplayMode();
+ 			deskRes = new Resolution(d.width, d.height);
+ 		}
+ 		return deskRes;
+diff --git a/src/fluddokt/opsu/fake/DynamicFreeTypeFont.java b/src/fluddokt/opsu/fake/DynamicFreeTypeFont.java
+index a6f9a9b3..617d2c77 100644
+--- a/src/fluddokt/opsu/fake/DynamicFreeTypeFont.java
++++ b/src/fluddokt/opsu/fake/DynamicFreeTypeFont.java
+@@ -39,13 +39,13 @@ public class DynamicFreeTypeFont {
+ 		Library library = FreeType.initFreeType();
+ 		if (library == null)
+ 			throw new GdxRuntimeException("Couldn't initialize FreeType");
+-		face = FreeType.newFace(library, font, 0);
++		face = library.newFace(font, 0);
+ 
+ 		if (face == null)
+ 			throw new GdxRuntimeException("Couldn't create face for font '"
+ 					+ font + "'");
+ 
+-		if (!FreeType.setPixelSizes(face, 0, (int) Math.round(fontParam.size))) {
++		if (!face.setPixelSizes(0, (int) Math.round(fontParam.size))) {
+ 			throw new GdxRuntimeException("Couldn't set size for font '" + font
+ 					+ "'");
+ 		}
+@@ -55,7 +55,7 @@ public class DynamicFreeTypeFont {
+ 		descent = FreeType.toInt(sizes.getDescender());
+ 		height = FreeType.toInt(sizes.getHeight());
+ 		// System.out.println("Face flag "+face.getFaceFlags());
+-		useKerning = FreeType.hasKerning(face);
++		useKerning = face.hasKerning();
+ 
+ 		thiscnt = cnt++;
+ 	}
+@@ -152,7 +152,7 @@ public class DynamicFreeTypeFont {
+ 			tface = backupface;
+ 			tparam = backParam;
+ 		}
+-		FreeType.loadChar(tface, c,
++		tface.loadChar(c,
+ 		// FreeType.FT_LOAD_RENDER
+ 		// FreeType.FT_LOAD_DEFAULT
+ 				fontParam.size < 16 ? FreeType.FT_LOAD_DEFAULT : 
+@@ -161,7 +161,7 @@ public class DynamicFreeTypeFont {
+ 		// FreeType.FT_LOAD_NO_AUTOHINT
+ 		);// FT_LOAD_MONOCHROME FT_RENDER_MODE_LIGHT
+ 		GlyphSlot slot = tface.getGlyph();
+-		FreeType.renderGlyph(slot, FreeType.FT_RENDER_MODE_LIGHT);
++		slot.renderGlyph(FreeType.FT_RENDER_MODE_LIGHT);
+ 		Bitmap bitmap = slot.getBitmap();
+ 
+ 		// System.out.println("Pixel Mode "+bitmap.getPixelMode());
+@@ -245,13 +245,13 @@ public class DynamicFreeTypeFont {
+ 			maxHeight = pixmap.getHeight();
+ 		}
+ 
+-		Pixmap.setBlending(Blending.None);
++		curPixmap.setBlending(Blending.None);
+ 		curPixmap.drawPixmap(pixmap, x, y);
+ 		if((tparam.style&Font.BOLD) > 0){
+-			Pixmap.setBlending(Blending.SourceOver);
++			curPixmap.setBlending(Blending.SourceOver);
+ 			curPixmap.drawPixmap(pixmap, x, y);
+ 			curPixmap.drawPixmap(pixmap, x, y);
+-			Pixmap.setBlending(Blending.None);
++			curPixmap.setBlending(Blending.None);
+ 		}
+ 		
+ 
+@@ -316,7 +316,7 @@ public class DynamicFreeTypeFont {
+ 
+ 	private float getCharWidth(char c) {
+ 		Face tface = charExist(face, c) ? face : backupface;
+-		FreeType.loadChar(tface, c,
++		tface.loadChar(c,
+ 				fontParam.size < 16 ? FreeType.FT_LOAD_DEFAULT : 
+ 									FreeType.FT_LOAD_NO_HINTING
+ 				 |FreeType.FT_LOAD_NO_BITMAP
+@@ -327,7 +327,7 @@ public class DynamicFreeTypeFont {
+ 	}
+ 	
+ 	private boolean charExist(Face face, char c) {
+-		return FreeType.getCharIndex(face, c) != 0;
++		return face.getCharIndex(c) != 0;
+ 	}
+ 
+ 	public int getLineHeight() {
+diff --git a/src/fluddokt/opsu/fake/GameContainer.java b/src/fluddokt/opsu/fake/GameContainer.java
+index c8982212..bf4b990a 100644
+--- a/src/fluddokt/opsu/fake/GameContainer.java
++++ b/src/fluddokt/opsu/fake/GameContainer.java
+@@ -1,7 +1,9 @@
+ package fluddokt.opsu.fake;
+ 
+ import com.badlogic.gdx.Gdx;
+ import com.badlogic.gdx.Application.ApplicationType;
++import com.badlogic.gdx.graphics.Cursor.SystemCursor;
++import com.badlogic.gdx.graphics.Pixmap;
+ 
+ import fluddokt.ex.DeviceInfo;
+ import fluddokt.opsu.fake.gui.GInputListener;
+@@ -88,12 +90,12 @@ public class GameContainer extends GUIContext{
+ 		return Graphics.getGraphics();
+ 	}
+ 
+ 	public int getScreenWidth() {
+-		return Gdx.graphics.getDesktopDisplayMode().width;
++		return Gdx.graphics.getDisplayMode().width;
+ 	}
+ 
+ 	public int getScreenHeight() {
+-		return Gdx.graphics.getDesktopDisplayMode().height;
++		return Gdx.graphics.getDisplayMode().height;
+ 	}
+ 
+ 	public void setVSync(boolean b) {
+@@ -154,14 +156,17 @@ public class GameContainer extends GUIContext{
+ 		// TODO Auto-generated method stub
+ 		
+ 	}
+ 	public void setDefaultMouseCursor() {
+-		Gdx.input.setCursorImage(null, 0, 0);
++		if (Gdx.app.getType() != ApplicationType.Android)
++			Gdx.graphics.setSystemCursor(SystemCursor.Arrow);
+ 		
+ 	}
+ 	public void setMouseCursor(Cursor cursor, int x, int y) throws SlickException {
+-		Gdx.input.setCursorImage(cursor.getPixmap(), x, y);
++		Pixmap pixmap = cursor.getPixmap();
++		if (Gdx.app.getType() != ApplicationType.Android && pixmap != null)
++			Gdx.graphics.setCursor(Gdx.graphics.newCursor(pixmap, x, y));
+ 		
+ 	}
+ 	public double getAspectRatio() {
+ 		return (double)width / height;
+ 	}
+diff --git a/src/fluddokt/opsu/fake/GameOpsu.java b/src/fluddokt/opsu/fake/GameOpsu.java
+index 1a0bf09b..144a0c99 100644
+--- a/src/fluddokt/opsu/fake/GameOpsu.java
++++ b/src/fluddokt/opsu/fake/GameOpsu.java
+@@ -13,6 +13,7 @@ import itdelatrisu.opsu.Opsu;
+ import itdelatrisu.opsu.options.Options;
+ 
+ import com.badlogic.gdx.Gdx;
++import com.badlogic.gdx.Input;
+ import com.badlogic.gdx.InputMultiplexer;
+ import com.badlogic.gdx.graphics.GL20;
+ import com.badlogic.gdx.scenes.scene2d.Stage;
+@@ -213,7 +214,7 @@ public class GameOpsu extends com.badlogic.gdx.Game {
+ 		}
+ 		
+ 		Gdx.graphics.setVSync(false);
+-		Gdx.input.setCatchBackKey(true);
++		Gdx.input.setCatchKey(Input.Keys.BACK, true);
+ 		
+ 		Gdx.gl.glEnable(GL20.GL_BLEND);
+ 		Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
+diff --git a/src/fluddokt/opsu/fake/Image.java b/src/fluddokt/opsu/fake/Image.java
+index f1a5b9eb..a1f911f5 100644
+--- a/src/fluddokt/opsu/fake/Image.java
++++ b/src/fluddokt/opsu/fake/Image.java
+@@ -235,7 +235,7 @@ public class Image {
+ 		}
+ 
+ 		public void addImage(ImageRefInfo info, Pixmap p2) {
+-			Pixmap.setBlending(Pixmap.Blending.None);
++			p.setBlending(Pixmap.Blending.None);
+ 			p.drawPixmap(p2, info.ax, info.ay);
+ 			imgs.add(info);
+ 		}
+@@ -247,7 +247,7 @@ public class Image {
+ 
+ 		private void loadPixmap() {
+ 			p = new Pixmap(pw, ph, Format.RGBA8888);
+-			Pixmap.setBlending(Pixmap.Blending.None);
++			p.setBlending(Pixmap.Blending.None);
+ 			for (ImageRefInfo info : imgs) {
+ 				Pixmap p2 = new Pixmap(info.fh);
+ 				p.drawPixmap(p2, info.ax, info.ay);
+diff --git a/src/fluddokt/opsu/fake/StateBasedGame.java b/src/fluddokt/opsu/fake/StateBasedGame.java
+index 887333e3..2e2602c9 100644
+--- a/src/fluddokt/opsu/fake/StateBasedGame.java
++++ b/src/fluddokt/opsu/fake/StateBasedGame.java
+@@ -282,6 +282,20 @@ public abstract class StateBasedGame extends Game2 implements InputProcessor {
+ 		return false;
+ 	}
+ 
++	@Override
++	public boolean touchCancelled(int screenX, int screenY, int pointer, int button) {
++		if (pointer > 0) {
++			mouseReleased(Input.MOUSE_RIGHT_BUTTON, oldx, oldy);
++			gc.getInput().setMouseRighButtontDown(false);
++			rightIsPressed = false;
++		} else {
++			mouseReleased(button, screenX, screenY);
++			oldx = screenX;
++			oldy = screenY;
++		}
++		return false;
++	}
++
+ 	@Override
+ 	public boolean touchDragged(int screenX, int screenY, int pointer) {
+ 		if (pointer == 0) {
+@@ -307,7 +321,8 @@ public abstract class StateBasedGame extends Game2 implements InputProcessor {
+ 	}
+ 
+ 	@Override
+-	public boolean scrolled(int amount) {
++	public boolean scrolled(float amountX, float amountY) {
++		int amount = Math.round(amountY);
+ 		for (GInputListener keylis : inputListener) {
+ 			keylis.consumeEvent = false;
+ 			keylis.mouseWheelMoved(-amount*120);

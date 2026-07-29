@@ -2,6 +2,11 @@ name: Publish revival source
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/publish-revival-source.yml
 
 permissions:
   contents: write

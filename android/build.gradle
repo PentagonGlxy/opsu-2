@@ -15,8 +15,8 @@ android {
         // allow this to be raised in a later release.
         targetSdk = 28
 
-        versionCode = 3
-        versionName = "0.17.0-alpha1"
+        versionCode = 4
+        versionName = "1.1.0"
         multiDexEnabled = true
 
         ndk {

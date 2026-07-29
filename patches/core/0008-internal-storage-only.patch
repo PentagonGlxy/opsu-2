@@ -15,8 +15,8 @@ persists absolute directory paths (BeatmapDirectory and friends) that older
 external-storage builds wrote. StorageMigration clears those, but they must
 not break before migration runs.
 ---
- a/src/fluddokt/opsu/fake/File.java | 59 ++++-------------------------
- 1 file changed, 12 insertions(+), 47 deletions(-)
+ a/src/fluddokt/opsu/fake/File.java | 87 ++++++-------------------------
+ 1 file changed, 28 insertions(+), 59 deletions(-)
 
 diff --git a/src/fluddokt/opsu/fake/File.java b/src/fluddokt/opsu/fake/File.java
 --- a/src/fluddokt/opsu/fake/File.java
@@ -105,7 +105,7 @@ diff --git a/src/fluddokt/opsu/fake/File.java b/src/fluddokt/opsu/fake/File.java
  	}
  
  	public File(FileHandle nfh) {
-@@ -215,11 +215,8 @@
+@@ -215,12 +215,9 @@
  		return newlist;
  	}
  

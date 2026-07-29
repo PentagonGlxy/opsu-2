@@ -47,8 +47,27 @@ silently changing or depending on write access to the upstream submodule.
   preserved.
 - Thread-safe audio clock state between the decoder and render threads.
 - Unbuffered touch dispatch on supported Android versions.
-- Automatic preference for the display's highest compatible refresh rate.
+- Default-on **Battery saver** display profile: menus use the closest compatible
+  60Hz mode while gameplay retains the display's fastest compatible refresh rate.
+- Screen-awake is enabled only during active gameplay instead of using a permanent
+  wakelock; unused motion sensors are disabled.
 - Android-compatible OpenGL boolean state queries, preventing slider-render crashes.
+- Persistent **Beatmap sounds** toggle for enabling or muting hit-object and slider sounds.
+- Separate **Custom beatmap sounds** toggle for indexed WAV, MP3, and OGG
+  samples in the current beatmap folder, with skin/default fallback.
+- Default-on **Smooth slider animations** with sub-millisecond slider-ball
+  movement, denser curve geometry, animated follow circles, eased snaking,
+  direction-correct ball rotation, and BPM-pulsing reverse arrows.
+- Default-on **Stable hitobject animations** with eased circle entrances,
+  animated slider caps, expanding hit bursts, graceful miss fades, lighting
+  motion, and cleaner judgement pop/fade movement.
+- Persistent **Seasonal backgrounds** toggle that rotates through every PNG, JPG,
+  JPEG, or BMP image imported into `Internal storage/opsu/seasonalbackgrounds`
+  on Android, with no hard image-count limit.
+- Android user data now lives in the visible shared internal-storage folder
+  `Internal storage/opsu/` instead of the app-private `Android/data` tree.
+- Beatmap downloads now use the maintained Mino, osu.direct, and Hinai mirrors
+  instead of the retired Ripple, Mnetwork, Hexide, and Bloodcat endpoints.
 - Modern Gradle 8.13, Android Gradle Plugin 8.13.2, and libGDX 1.14.2 build.
 - 32-bit and 64-bit ARM/x86 native libraries.
 - Runtime storage-permission handling with app-private storage fallback.

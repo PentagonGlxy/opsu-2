@@ -10,7 +10,7 @@ buildscript {
 
 allprojects {
     group = "fluddokt.opsu"
-    version = "0.17.0-alpha1"
+    version = "1.0.0"
 
     repositories {
         google()

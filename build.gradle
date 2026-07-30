@@ -1,130 +1,140 @@
 buildscript {
     repositories {
+        google()
         mavenCentral()
-        jcenter()
     }
     dependencies {
-        classpath 'de.richsource.gradle.plugins:gwt-gradle-plugin:0.6'
-        classpath 'com.android.tools.build:gradle:1.0.0'
-        classpath 'org.robovm:robovm-gradle-plugin:1.0.0-beta-01'
+        classpath "com.android.tools.build:gradle:8.13.2"
     }
 }
 
 allprojects {
-    apply plugin: "eclipse"
-    apply plugin: "idea"
-
-    version = '1.0'
-    ext {
-        appName = 'FKGdxOpsu'
-        gdxVersion = '1.5.2'
-        roboVMVersion = '1.0.0-beta-01'
-        box2DLightsVersion = '1.3'
-        ashleyVersion = '1.3.1'
-        aiVersion = '1.4.0'
-    }
+    group = "fluddokt.opsu"
+    version = "1.1.0"
 
     repositories {
+        google()
         mavenCentral()
-        maven { url "https://oss.sonatype.org/content/repositories/snapshots/" }
-        maven { url "https://oss.sonatype.org/content/repositories/releases/" }
-    }
-    eclipse {
-	    classpath {
-	        downloadJavadoc = true
-	    }
-	}
-}
-
-project(":desktop") {
-    apply plugin: "java"
-
-
-    dependencies {
-        compile project(":core")
-        compile "com.badlogicgames.gdx:gdx-backend-lwjgl:$gdxVersion"
-        compile "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-desktop"
-        compile "com.badlogicgames.gdx:gdx-freetype-platform:$gdxVersion:natives-desktop"
-        compile fileTree(dir: 'libs', include: '*.jar')
-        compile 'org.xerial:sqlite-jdbc:3.15.1'
     }
 }
 
-project(":android") {
-    apply plugin: "android"
+ext {
+    appName = "opsu"
+    gdxVersion = "1.14.2"
+}
 
-    configurations { natives }
+tasks.register("applyCorePatches") {
+    group = "build setup"
+    description = "Applies opsu! Android revival patches and overlays to the pinned core submodule."
 
-    dependencies {
-        compile project(":core")
-        compile "com.badlogicgames.gdx:gdx-backend-android:$gdxVersion"
-        natives "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-armeabi"
-        natives "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-armeabi-v7a"
-        natives "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-x86"
-        compile "com.badlogicgames.gdx:gdx-freetype:$gdxVersion"
-        natives "com.badlogicgames.gdx:gdx-freetype-platform:$gdxVersion:natives-armeabi"
-        natives "com.badlogicgames.gdx:gdx-freetype-platform:$gdxVersion:natives-armeabi-v7a"
-        natives "com.badlogicgames.gdx:gdx-freetype-platform:$gdxVersion:natives-x86"
-        compile fileTree(dir: 'libs', include: '*.jar')
-        compile 'org.sqldroid:sqldroid:1.0.3'
-        compile 'org.jcraft:jorbis:0.0.17'
-        compile 'net.lingala.zip4j:zip4j:1.3.2'
-        compile 'org.json:json:20160810'
-        compile 'org.tukaani:xz:1.6'
-        
+    doLast {
+        def coreDir = file("core")
+        def patches = fileTree(dir: "patches/core", include: "*.patch").files.toList()
+        patches.sort { a, b -> a.name <=> b.name }
+
+        patches.each { patchFile ->
+            // Stage 1: git apply. Strict about context, so this stays the
+            // preferred path and keeps the existing patches behaving exactly as
+            // they do today.
+            def checkOutput = new ByteArrayOutputStream()
+            def canApply = exec {
+                workingDir coreDir
+                commandLine "git", "apply", "--check", "--ignore-space-change", patchFile.absolutePath
+                ignoreExitValue true
+                standardOutput = checkOutput
+                errorOutput = checkOutput
+            }
+
+            if (canApply.exitValue == 0) {
+                exec {
+                    workingDir coreDir
+                    commandLine "git", "apply", "--ignore-space-change", patchFile.absolutePath
+                }
+                logger.lifecycle("Applied core patch: ${patchFile.name}")
+                return
+            }
+
+            // Stage 2: is it already applied? That is a no-op, not a failure,
+            // which keeps the task safe to re-run against a dirty checkout.
+            def reverseCheckOutput = new ByteArrayOutputStream()
+            def alreadyApplied = exec {
+                workingDir coreDir
+                commandLine "git", "apply", "--reverse", "--check", "--ignore-space-change", patchFile.absolutePath
+                ignoreExitValue true
+                standardOutput = reverseCheckOutput
+                errorOutput = reverseCheckOutput
+            }
+            if (alreadyApplied.exitValue == 0) {
+                logger.lifecycle("Skipped core patch (already applied): ${patchFile.name}")
+                return
+            }
+
+            // Stage 3: GNU patch. It searches the file for the hunk context
+            // instead of insisting on a match at the declared line, and --fuzz
+            // lets it drop context lines that have drifted. Rejects are
+            // discarded and backups suppressed so a failed fallback cannot
+            // leave .orig/.rej files behind in the submodule.
+            def fuzzyArgs = [
+                "patch", "-p1",
+                "--forward",
+                "--fuzz=2",
+                "--ignore-whitespace",
+                "--no-backup-if-mismatch",
+                "-r", "-",
+                "-i", patchFile.absolutePath
+            ]
+            def fuzzyOutput = new ByteArrayOutputStream()
+            def fuzzyCheck = exec {
+                workingDir coreDir
+                commandLine fuzzyArgs + ["--dry-run"]
+                ignoreExitValue true
+                standardOutput = fuzzyOutput
+                errorOutput = fuzzyOutput
+            }
+            if (fuzzyCheck.exitValue == 0) {
+                exec {
+                    workingDir coreDir
+                    commandLine fuzzyArgs
+                }
+                // Labelled so a fuzzy apply is never mistaken for a clean one.
+                logger.lifecycle("Applied core patch (fuzzy): ${patchFile.name}")
+                return
+            }
+
+            throw new GradleException(
+                "Core patch does not apply cleanly: ${patchFile.name}\n" +
+                "-- git apply --check --\n" +
+                checkOutput.toString("UTF-8") +
+                "-- git apply --reverse --check --\n" +
+                reverseCheckOutput.toString("UTF-8") +
+                "-- patch --dry-run --\n" +
+                fuzzyOutput.toString("UTF-8")
+            )
+        }
+
+        // Whole-file overlays, applied AFTER the patches.
+        //
+        // A context diff is the wrong tool for a file we effectively own: it can
+        // fail for reasons that are hard to diagnose, and it fails at build time
+        // rather than review time. core-overlay/ mirrors the core source tree and
+        // its files simply replace their counterparts, so there is no context to
+        // match and nothing to drift.
+        //
+        // Correctness relies on no patch touching an overlaid file. That holds
+        // today: 0001-0010 never touch MainMenu.java. If that ever changes, the
+        // overlay silently wins, so prefer a patch for shared files and reserve
+        // overlays for sources this project fully controls.
+        def overlayDir = file("core-overlay")
+        if (overlayDir.isDirectory()) {
+            def overlaid = fileTree(dir: overlayDir).files.toList()
+            copy {
+                from overlayDir
+                into coreDir
+            }
+            overlaid.each { overlayFile ->
+                def relative = overlayDir.toURI().relativize(overlayFile.toURI()).path
+                logger.lifecycle("Applied core overlay: ${relative}")
+            }
+        }
     }
-}
-
-project(":ios") {
-    apply plugin: "java"
-    apply plugin: "robovm"
-
-    configurations { natives }
-
-    dependencies {
-        compile project(":core")
-        compile "org.robovm:robovm-rt:${roboVMVersion}"
-        compile "org.robovm:robovm-cocoatouch:${roboVMVersion}"
-        compile "com.badlogicgames.gdx:gdx-backend-robovm:$gdxVersion"
-        natives "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-ios"
-        natives "com.badlogicgames.gdx:gdx-freetype-platform:$gdxVersion:natives-ios"
-    }
-}
-
-project(":html") {
-    apply plugin: "gwt"
-    apply plugin: "war"
-
-
-    dependencies {
-        compile project(":core")
-        compile "com.badlogicgames.gdx:gdx-backend-gwt:$gdxVersion"
-        compile "com.badlogicgames.gdx:gdx:$gdxVersion:sources"
-        compile "com.badlogicgames.gdx:gdx-backend-gwt:$gdxVersion:sources"
-    }
-}
-
-project(":core") {
-    apply plugin: "java"
-
-
-    dependencies {
-        compile project(":jlayer")
-        compile "com.badlogicgames.gdx:gdx:$gdxVersion"
-        compile "com.badlogicgames.gdx:gdx-freetype:$gdxVersion"
-        compile fileTree(dir: 'libs', include: '*.jar')
-        compile 'org.jcraft:jorbis:0.0.17'
-        compile 'net.lingala.zip4j:zip4j:1.3.2'
-        compile 'org.json:json:20160810'
-        compile 'org.tukaani:xz:1.6'
-    
-    }
-}
-
-project(":jlayer") {
-    apply plugin: "java"
-}
-
-tasks.eclipse.doLast {
-    delete ".project"
 }

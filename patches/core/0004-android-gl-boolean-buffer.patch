@@ -1,0 +1,15 @@
+diff --git a/src/fluddokt/opsu/fake/gl/GL11.java b/src/fluddokt/opsu/fake/gl/GL11.java
+index 6e97059e..f8f165d9 100644
+--- a/src/fluddokt/opsu/fake/gl/GL11.java
++++ b/src/fluddokt/opsu/fake/gl/GL11.java
+@@ -90,8 +90,8 @@ public class GL11 {
+ 	}
+ 
+ 	public static boolean glGetBoolean(int pname) {
+-		Gdx.gl20.glGetBooleanv(pname, UtilBuff.prepareByte());
+-		return UtilBuff.getByte() != 0;
++		Gdx.gl20.glGetBooleanv(pname, UtilBuff.prepare());
++		return UtilBuff.get() != 0;
+ 	}
+ 
+ 	public static void glDepthMask(boolean flag) {

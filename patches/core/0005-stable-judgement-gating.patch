@@ -1,0 +1,65 @@
+Port osu!stable's judgement gating to opsu!.
+
+Two behaviours are restored here:
+
+1. osu!stable has no "early miss" window.  opsu! invented a
+   (500 - OD * 10)ms window and awarded a real MISS for any press inside
+   it, so clicking ~400ms early on a circle broke the player's combo.
+   In stable such a press is simply discarded (the circle shakes).
+
+2. osu!stable applies a strict note lock: only the earliest unresolved
+   object may be judged, and a press that fails to resolve it does not
+   fall through to a later object.  opsu! walked the whole passedObjects
+   list and then the current object, which let players hit objects out of
+   order and made stacks and streams behave very differently from stable.
+
+diff --git a/src/itdelatrisu/opsu/objects/Circle.java b/src/itdelatrisu/opsu/objects/Circle.java
+--- a/src/itdelatrisu/opsu/objects/Circle.java
++++ b/src/itdelatrisu/opsu/objects/Circle.java
+@@ -137,8 +137,7 @@
+ 		else if (timeDiff <= hitResultOffset[GameData.HIT_50])
+ 			result = GameData.HIT_50;
+-		else if (timeDiff <= hitResultOffset[GameData.HIT_MISS])
+-			result = GameData.HIT_MISS;
+-		//else not a hit
++		// osu!stable has no "early miss" window: a press landing outside the 50
++		// window is discarded (the circle only shakes), so leave the result at -1.
+ 
+ 		return result;
+ 	}
+diff --git a/src/itdelatrisu/opsu/states/Game.java b/src/itdelatrisu/opsu/states/Game.java
+--- a/src/itdelatrisu/opsu/states/Game.java
++++ b/src/itdelatrisu/opsu/states/Game.java
+@@ -1655,17 +1655,21 @@
+ 	private void sendGameKeyPress(int keys, int x, int y, int trackPosition) {
+ 		if (!hasMoreObjects() || gameFinished)  // nothing to do here
+ 			return;
+ 
+-		// check missed objects first
+-		Iterator<Integer> iter = passedObjects.iterator();
+-		while (iter.hasNext()) {
+-			int index = iter.next();
+-			HitObject hitObject = beatmap.objects[index];
+-			if (hitObject.isCircle() && gameObjects[index].mousePressed(x, y, trackPosition)) {
+-				iter.remove();  // circle hit, remove it
+-				return;
+-			} else if (hitObject.isSlider() && gameObjects[index].mousePressed(x, y, trackPosition))
+-				return;  // slider initial circle hit
+-		}
++		// osu!stable note lock: only the earliest unresolved object may be
++		// judged.  A press that fails to resolve it is swallowed instead of
++		// falling through to later objects, which is what produces stable's
++		// "shielding" behaviour on stacks and streams.
++		if (!passedObjects.isEmpty()) {
++			Iterator<Integer> iter = passedObjects.iterator();
++			int index = iter.next();
++			HitObject lockedObject = beatmap.objects[index];
++			if (lockedObject.isCircle()) {
++				if (gameObjects[index].mousePressed(x, y, trackPosition))
++					iter.remove();  // circle hit, remove it
++			} else if (lockedObject.isSlider())
++				gameObjects[index].mousePressed(x, y, trackPosition);
++			return;
++		}
+ 
+ 		// check current object

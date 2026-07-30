@@ -1,0 +1,243 @@
+Subject: [PATCH] Add seasonal background loader with unlimited image support
+
+Scans the whole seasonalbackground folder on every reroll, so the number of
+images a user can drop in is unlimited: there is no cap, no fixed-size array,
+and no filename convention.
+
+Memory behaviour is the reason this is safe. Exactly one decoded Image is held
+and the outgoing texture is destroyed before the next is decoded, so GPU usage
+is one background regardless of whether the folder holds 3 or 3000 files. A
+1920x1080 background is roughly 8 MB as RGBA8888 no matter how small the
+compressed file is on disk.
+
+Two details of the surrounding code shape this implementation:
+
+- Images are loaded by ABSOLUTE path. ResourceLoader.getFileHandle() tries
+  Gdx.files.absolute(file) first and only then walks the registered resource
+  locations, so an absolute path resolves without registering the folder as a
+  resource location. A relative path would not be found.
+
+- The result is dimension-checked. Image's String constructor catches
+  GdxRuntimeException from Pixmap and falls back to a blank 0x0 texture
+  instead of throwing, so a corrupt file yields a silently blank background
+  unless the dimensions are validated.
+
+Rerolls are event-driven (menu entry, track change) and never per frame, so
+the directory listing never runs on the render path.
+---
+ a/src/itdelatrisu/opsu/ui/SeasonalBackground.java | 208 ++++++++++++++++++
+ 1 file changed, 208 insertions(+)
+
+diff --git a/src/itdelatrisu/opsu/ui/SeasonalBackground.java b/src/itdelatrisu/opsu/ui/SeasonalBackground.java
+new file mode 100644
+--- /dev/null
++++ b/src/itdelatrisu/opsu/ui/SeasonalBackground.java
+@@ -0,0 +1,208 @@
++/*
++ * opsu! - an open-source osu! client
++ * Copyright (C) 2014-2017 Jeffrey Han
++ *
++ * opsu! is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * opsu! is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with opsu!.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++package itdelatrisu.opsu.ui;
++
++import fluddokt.opsu.fake.File;
++import fluddokt.opsu.fake.Image;
++import fluddokt.opsu.fake.Log;
++
++import itdelatrisu.opsu.options.Options;
++
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Random;
++
++/**
++ * Random main-menu backgrounds loaded from the user's "seasonalbackground"
++ * folder inside internal storage.
++ *
++ * <p>Design notes:
++ * <ul>
++ *   <li><b>Unlimited images.</b> The folder is enumerated in full on every
++ *       reroll. There is no cap, no fixed-size array, and no filename
++ *       convention -- adding 3 or 3000 files behaves identically.</li>
++ *   <li><b>One texture at a time.</b> Exactly one decoded {@link Image} is
++ *       held. The outgoing texture is destroyed before the next is decoded,
++ *       so GPU memory stays flat regardless of how many files exist.</li>
++ *   <li><b>Event-driven rerolls.</b> Scanning happens only on menu entry and
++ *       track change, never per frame.</li>
++ * </ul>
++ */
++public class SeasonalBackground {
++	/** Accepted image extensions (lowercase). */
++	private static final String[] EXTENSIONS = { ".png", ".jpg", ".jpeg" };
++
++	/** Currently loaded background, or null if none is available. */
++	private static Image current;
++
++	/** Absolute path of the current image, used to avoid immediate repeats. */
++	private static String currentPath;
++
++	/** Set when the folder was found empty, to avoid rescanning every reroll. */
++	private static boolean knownEmpty;
++
++	private static final Random RANDOM = new Random();
++
++	// This class should not be instantiated.
++	private SeasonalBackground() {}
++
++	/**
++	 * Returns the current background, or {@code null} when unavailable (option
++	 * disabled, folder empty, or the last decode failed). Callers must fall
++	 * back to the normal background when this returns {@code null}.
++	 */
++	public static Image getImage() {
++		if (!Options.isSeasonalBackgroundEnabled())
++			return null;
++		return current;
++	}
++
++	/**
++	 * Picks a new random background. Cheap no-op when the option is disabled
++	 * or the folder is known to be empty. Safe to call on state entry and
++	 * track change; must never be called per frame.
++	 */
++	public static void reroll() {
++		if (!Options.isSeasonalBackgroundEnabled()) {
++			unload();
++			knownEmpty = false;
++			return;
++		}
++		if (knownEmpty)
++			return;
++
++		// Full folder scan: this is what makes the image count unlimited.
++		List<File> candidates = scan();
++		if (candidates.isEmpty()) {
++			knownEmpty = true;
++			unload();
++			return;
++		}
++
++		File chosen = pick(candidates);
++		if (chosen != null)
++			load(chosen);
++	}
++
++	/**
++	 * Forces the next {@link #reroll()} to rescan even if the folder was
++	 * previously empty, so a user who just copied images in does not have to
++	 * restart the game.
++	 */
++	public static void invalidate() {
++		knownEmpty = false;
++	}
++
++	/** Enumerates every supported image in the folder. Never returns null. */
++	private static List<File> scan() {
++		List<File> result = new ArrayList<File>();
++
++		// getSeasonalBackgroundDir() creates the folder when it is missing.
++		File[] files = Options.getSeasonalBackgroundDir().listFiles();
++		if (files == null)
++			return result;
++
++		for (int i = 0; i < files.length; i++) {
++			File f = files[i];
++			if (f.isDirectory())
++				continue;
++			if (hasSupportedExtension(f.getName()))
++				result.add(f);
++		}
++		return result;
++	}
++
++	private static boolean hasSupportedExtension(String name) {
++		String lower = name.toLowerCase();
++		for (int i = 0; i < EXTENSIONS.length; i++) {
++			if (lower.endsWith(EXTENSIONS[i]))
++				return true;
++		}
++		return false;
++	}
++
++	/**
++	 * Chooses a random candidate, avoiding an immediate repeat when more than
++	 * one file is available. Returns {@code null} when the only candidate is
++	 * already loaded, so the caller can skip a pointless decode.
++	 */
++	private static File pick(List<File> candidates) {
++		if (candidates.size() == 1) {
++			File only = candidates.get(0);
++			return only.getAbsolutePath().equals(currentPath) ? null : only;
++		}
++
++		// Rejection sampling; guaranteed to terminate because size() > 1.
++		for (int attempt = 0; attempt < 8; attempt++) {
++			File pick = candidates.get(RANDOM.nextInt(candidates.size()));
++			if (!pick.getAbsolutePath().equals(currentPath))
++				return pick;
++		}
++		return candidates.get(RANDOM.nextInt(candidates.size()));
++	}
++
++	/** Decodes {@code file}, replacing and freeing any previous background. */
++	private static void load(File file) {
++		// Free the outgoing texture FIRST so peak usage is one image, not two.
++		unload();
++
++		String path = file.getAbsolutePath();
++		try {
++			// ResourceLoader.getFileHandle() tries Gdx.files.absolute() first,
++			// so an absolute path resolves without registering a resource
++			// location. A relative path would not be found here.
++			Image loaded = new Image(path);
++
++			// Image's constructor swallows decode errors and falls back to a
++			// 0x0 blank texture instead of throwing, so check the dimensions.
++			if (loaded.getWidth() <= 0 || loaded.getHeight() <= 0) {
++				Log.warn("Seasonal background could not be decoded: " + path);
++				safeDestroy(loaded);
++				return;
++			}
++
++			current = loaded;
++			currentPath = path;
++		} catch (Throwable t) {
++			// Catches SlickException plus OutOfMemoryError and
++			// GdxRuntimeException from oversized images. A bad file must
++			// never break the main menu.
++			Log.warn("Failed to load seasonal background: " + path + " " + t);
++			current = null;
++			currentPath = null;
++		}
++	}
++
++	/** Releases the current texture, if any. */
++	public static void unload() {
++		if (current != null) {
++			safeDestroy(current);
++			current = null;
++		}
++		currentPath = null;
++	}
++
++	private static void safeDestroy(Image image) {
++		try {
++			image.destroy();
++		} catch (Throwable t) {
++			Log.warn("Failed to release seasonal background: " + t);
++		}
++	}
++}

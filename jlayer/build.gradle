@@ -1,10 +1,22 @@
-sourceSets.main {
-    java.srcDirs = ['src/src']
-    resources {
-        srcDirs 'src/src'
-        include "**/*.ser"
+plugins {
+    id "java-library"
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+}
+
+sourceSets {
+    main {
+        java.srcDirs = ["src/src"]
+        resources {
+            srcDirs = ["src/src"]
+            include "**/*.ser"
+        }
     }
 }
 
-sourceCompatibility = 1.7
-targetCompatibility = 1.7
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = "UTF-8"
+}

@@ -1,0 +1,275 @@
+diff --git a/src/fluddokt/opsu/fake/AudioDevicePlayer2.java b/src/fluddokt/opsu/fake/AudioDevicePlayer2.java
+index 3f896f84..47640224 100644
+--- a/src/fluddokt/opsu/fake/AudioDevicePlayer2.java
++++ b/src/fluddokt/opsu/fake/AudioDevicePlayer2.java
+@@ -11,30 +11,30 @@ import fluddokt.opsu.fake.openal.AudioInputStreamFactory;
+ public class AudioDevicePlayer2 extends AudioDevicePlayer {
+ 
+ 	private final AudioDevicePlayer2 thisAudioDevicePlayer = this;
+-	private boolean setNextPosition = false;
+-	private float nextPosition;
+-	private float volume = 0.1f;
++	private volatile boolean setNextPosition = false;
++	private volatile float nextPosition;
++	private volatile float volume = 0.1f;
+ 	
+-	private PlayThread playThread;
++	private volatile PlayThread playThread;
+ 	private AudioInputStreamFactory inputStreamFactory;
+ 	private AudioInputStream2 currentStream;
+-	private Object currentStreamLock = new Object();
++	private final Object currentStreamLock = new Object();
+ 	private String name;
+ 	
+ 	private AudioDeviceListener adl;
+ 
+-	private boolean paused = true;
+-	private boolean stop = true;
++	private volatile boolean paused = true;
++	private volatile boolean stop = true;
+ 	
+ 	private boolean toLoop;
+ 
+-	private int samplePos;
++	private volatile int samplePos;
+ 	
+-	private float pitch = 1f;
++	private volatile float pitch = 1f;
+ 	
+-	float latency;
+-	int sampleRate = -1;
+-	int channels;
++	private volatile float latency;
++	private volatile int sampleRate = -1;
++	private volatile int channels;
+ 	
+ 	static int threadCount = 0;
+ 	static Object threadCountLock = new Object();
+@@ -53,7 +53,7 @@ public class AudioDevicePlayer2 extends AudioDevicePlayer {
+ 	boolean initData = false;
+ 
+ 	class PlayThread extends Thread {
+-		boolean toStop = false;
++		volatile boolean toStop = false;
+ 		boolean initedAD = false;
+ 		boolean audioUsed = false;
+ 
+@@ -122,7 +122,7 @@ public class AudioDevicePlayer2 extends AudioDevicePlayer {
+ 						//audioUsed = true;
+ 						
+ 						System.out.println("Latency: " + ad.getLatency() + " sr:" + sampleRate);
+-						latency = ad.getLatency() / sampleRate;
++						latency = (float) ad.getLatency() / (float) sampleRate;
+ 						adl.requestSync(thisAudioDevicePlayer);
+ 					}
+ 					ad.setVolume(volume);
+@@ -337,7 +337,12 @@ public class AudioDevicePlayer2 extends AudioDevicePlayer {
+ 		if (setNextPosition) {
+ 			return nextPosition;
+ 		}
+-		return (float)samplePos/sampleRate/channels - latency;
++		int currentSampleRate = sampleRate;
++		int currentChannels = channels;
++		int currentSamplePosition = samplePos;
++		if (currentSampleRate <= 0 || currentChannels <= 0)
++			return 0f;
++		return (float) currentSamplePosition / currentSampleRate / currentChannels - latency;
+ 		//return (position) / 1000f - latency;
+ 	}
+ 
+diff --git a/src/fluddokt/opsu/fake/AudioDevicePlayer3.java b/src/fluddokt/opsu/fake/AudioDevicePlayer3.java
+index e68d2de7..97cf2189 100644
+--- a/src/fluddokt/opsu/fake/AudioDevicePlayer3.java
++++ b/src/fluddokt/opsu/fake/AudioDevicePlayer3.java
+@@ -135,7 +135,7 @@ public class AudioDevicePlayer3 extends AudioDevicePlayer{
+ 								System.out
+ 										.println("Latency: " + ad.getLatency()
+ 												+ " sr:" + sampleRate);
+-								latency = ad.getLatency() / sampleRate;
++								latency = (float) ad.getLatency() / (float) sampleRate;
+ 							}
+ 							ad.setVolume(volume);
+ 							posUpdateTime = TimeUtils.millis();
+diff --git a/src/fluddokt/opsu/fake/Music.java b/src/fluddokt/opsu/fake/Music.java
+index ab7dc5a6..5c5b530c 100644
+--- a/src/fluddokt/opsu/fake/Music.java
++++ b/src/fluddokt/opsu/fake/Music.java
+@@ -5,11 +5,15 @@ import java.util.ArrayList;
+ 
+ import com.badlogic.gdx.utils.TimeUtils;
+ 
+-public class Music implements AbsMusicCompleteListener{
+-
+-	AbsMusic music;
+-	ArrayList<MusicListener> musicListenerList = new ArrayList<MusicListener>();
+-	float pitch = 1;
++public class Music implements AbsMusicCompleteListener{
++
++	private static final float HARD_SYNC_THRESHOLD_SECONDS = 0.200f;
++	private static final float SOFT_SYNC_THRESHOLD_SECONDS = 0.002f;
++	private static final float MAX_SOFT_CORRECTION_SECONDS = 0.004f;
++
++	AbsMusic music;
++	ArrayList<MusicListener> musicListenerList = new ArrayList<MusicListener>();
++	float pitch = 1;
+ 	float volume = 1;
+ 	public Music(String path, boolean b) {
+ 		if(music != null){
+@@ -74,67 +78,84 @@ public class Music implements AbsMusicCompleteListener{
+ 
+ 	
+ 
+-	float lastPosition = 0;// music.getPosition();
+-	float lastUpdatePosition = 0;
+-	long lastTime = TimeUtils.millis(); //assumed start time
+-	long lastUpdateTime = TimeUtils.millis();
+-	float deltaTime = 0;
+-	float avgDiff;
+-	int diffCnt = 0;
+-
+-	private void syncPosition(){
+-		lastPosition = music.getPosition();
+-		lastTime = TimeUtils.millis() - (long) (lastPosition * 1000 / pitch);
+-		//System.out.println("sync"+" "+lastPosition+" "+lastTime);
+-		avgDiff = 0;
+-		diffCnt = 0;
+-	}
+-	public float getPosition() {
+-		if(!music.playing())
+-			return music.getPosition();
+-		float thisPosition = music.getPosition();
+-		long thisTime = TimeUtils.millis();
+-		// float dxPosition = thisPosition - lastPosition;
+-		float dxPosition2 = thisPosition - lastUpdatePosition;
+-
+-		float syncPosition = (thisPosition);// ;
+-		float dxTime = ((thisTime - lastTime))*pitch;
+-
+-		// Whenever the time changes check the difference between that and our
+-		// current time
+-		// sync our time to song time
+-		if (Math.abs(syncPosition - dxTime / 1000f) > 0.2f) {
+-			System.out.println("Time HARD Reset" + " " + syncPosition + " "
+-					+ (dxTime / 1000f) + " "
+-					+ (int) (syncPosition * 1000 - (dxTime)) + " "
+-					+ (int) (syncPosition * 1000 - (thisTime - lastTime)));
+-			syncPosition();
+-			dxTime = ((thisTime - lastTime)*pitch);
+-			avgDiff = 0;
+-		}
+-		float diff = syncPosition * 1000 - (dxTime);
+-		if ((int) (dxPosition2 * 1000) != 0) {// && thisTime-lastUpdateTime>8
+-			if(diffCnt<100)
+-				diffCnt++;
+-			
+-			avgDiff = ((diff + (avgDiff * (diffCnt-1))) / diffCnt);
+-			float minDiff = avgDiff/1;
+-			if(Math.abs(minDiff)>=1){
+-				//System.err.println("getPosition: mpos:"+lastTime+"\t "+thisPosition+"\t "+(dxTime/1000f)+"\t diff:"+(int)(diff)+"\t avg:"+avgDiff+"\t "+" "+diffCnt+" "+minDiff);
+-				lastTime -= (int)(minDiff);
+-				avgDiff -=  (int)(minDiff);
+-			}
+-			dxTime = ((thisTime - lastTime)*pitch);
+-			lastUpdatePosition = thisPosition;
+-			lastUpdateTime = thisTime;
+-		} 
+-
+-		lastGetPos = dxTime / 1000f;
+-		//System.out.println("getPos:"+dxTime/1000f+" "+dxPosition2);
+-		return dxTime / 1000f;
+-	}
+-	float lastGetPos;
+-	
++	private float clockAnchorPosition;
++	private long clockAnchorNanos = TimeUtils.nanoTime();
++	private float lastBackendPosition;
++	private float lastReportedPosition;
++	private boolean clockInitialized;
++
++	private static float clamp(float value, float min, float max) {
++		return Math.max(min, Math.min(max, value));
++	}
++
++	private static float sanitizePosition(float position) {
++		return (Float.isNaN(position) || Float.isInfinite(position)) ? 0f : position;
++	}
++
++	private synchronized void syncPosition(){
++		float position = sanitizePosition(music.getPosition());
++		clockAnchorPosition = position;
++		clockAnchorNanos = TimeUtils.nanoTime();
++		lastBackendPosition = position;
++		lastReportedPosition = position;
++		clockInitialized = true;
++	}
++
++	public synchronized float getPosition() {
++		float backendPosition = sanitizePosition(music.getPosition());
++		long now = TimeUtils.nanoTime();
++
++		if (!music.playing()) {
++			clockAnchorPosition = backendPosition;
++			clockAnchorNanos = now;
++			lastBackendPosition = backendPosition;
++			lastReportedPosition = backendPosition;
++			clockInitialized = true;
++			return backendPosition;
++		}
++
++		if (!clockInitialized) {
++			clockAnchorPosition = backendPosition;
++			clockAnchorNanos = now;
++			lastBackendPosition = backendPosition;
++			lastReportedPosition = backendPosition;
++			clockInitialized = true;
++		}
++
++		float predictedPosition = clockAnchorPosition +
++				((now - clockAnchorNanos) / 1000000000f) * pitch;
++
++		/*
++		 * Android audio positions advance in blocks.  Use the monotonic clock
++		 * between those updates, then gently converge when a new sample-clock
++		 * position arrives.  Large discontinuities are seeks/restarts and must
++		 * be applied immediately.
++		 */
++		if (backendPosition != lastBackendPosition) {
++			float error = backendPosition - predictedPosition;
++			if (Math.abs(error) >= HARD_SYNC_THRESHOLD_SECONDS) {
++				clockAnchorPosition = backendPosition;
++				clockAnchorNanos = now;
++				predictedPosition = backendPosition;
++			} else if (Math.abs(error) >= SOFT_SYNC_THRESHOLD_SECONDS) {
++				float correction = clamp(
++					error * 0.25f,
++					-MAX_SOFT_CORRECTION_SECONDS,
++					MAX_SOFT_CORRECTION_SECONDS
++				);
++				clockAnchorPosition += correction;
++				predictedPosition += correction;
++			}
++			lastBackendPosition = backendPosition;
++		}
++
++		// Playback time must not move backwards between rendered frames.
++		if (pitch >= 0f && predictedPosition < lastReportedPosition)
++			predictedPosition = lastReportedPosition;
++
++		lastReportedPosition = predictedPosition;
++		return predictedPosition;
++	}
+ 
+ 	public void dispose() {
+ 		//System.out.println("Music dispose " + music.getName());
+diff --git a/src/itdelatrisu/opsu/options/Options.java b/src/itdelatrisu/opsu/options/Options.java
+--- a/src/itdelatrisu/opsu/options/Options.java
++++ b/src/itdelatrisu/opsu/options/Options.java
+@@ -547,7 +547,7 @@ public class Options {
+ 		},
+ 		EFFECT_VOLUME ("Effects", "VolumeEffect", "Menu and game sound effects volume.", 70, 0, 100),
+ 		HITSOUND_VOLUME ("Hit sounds", "VolumeHitSound", "Hit sounds volume.", 30, 0, 100),
+-		MUSIC_OFFSET ("Universal offset", "Offset", "Adjust this value if hit objects are out of sync.", -200, -2000, 500) {
++		MUSIC_OFFSET ("Universal offset", "Offset", "Adjust this value if hit objects are out of sync.", 0, -2000, 500) {
+ 			@Override
+ 			public String getValueString() { return String.format("%dms", val); }
+ 		},

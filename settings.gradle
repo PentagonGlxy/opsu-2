@@ -1,1 +1,13 @@
-include 'desktop', 'android', 'ios', 'html', 'core', 'jlayer'
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+rootProject.name = "opsu-android"
+
+include "android", "core", "jlayer"
+
+project(":core").buildFileName = "../gradle/core.gradle"

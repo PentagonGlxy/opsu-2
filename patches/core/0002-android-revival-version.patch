@@ -1,0 +1,12 @@
+diff --git a/src/fluddokt/opsu/fake/GameOpsu.java b/src/fluddokt/opsu/fake/GameOpsu.java
+--- a/src/fluddokt/opsu/fake/GameOpsu.java
++++ b/src/fluddokt/opsu/fake/GameOpsu.java
+@@ -24,7 +24,7 @@ import com.badlogic.gdx.utils.viewport.ScreenViewport;
+ 
+ public class GameOpsu extends com.badlogic.gdx.Game {
+ 
+-	public final static String VERSION = "0.16.1a";
++	public final static String VERSION = "1.1.0";
+ 	public StateBasedGame sbg;
+ 	
+ 	Stage stage;

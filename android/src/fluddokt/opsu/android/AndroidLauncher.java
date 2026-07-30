@@ -4,7 +4,6 @@ import android.Manifest;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
@@ -21,13 +20,23 @@ import fluddokt.opsu.fake.File;
 import fluddokt.opsu.fake.GameOpsu;
 
 public class AndroidLauncher extends AndroidApplication {
-	private static final int STORAGE_PERMISSION_REQUEST = 1001;
+	/**
+	 * Request code for the one-time legacy storage READ permission.
+	 *
+	 * <p>The game itself needs no storage permission now that all user files
+	 * live in internal storage. This is requested only to migrate a pre-1.1
+	 * external tree, and only when such a tree may still exist.
+	 */
+	private static final int MIGRATION_PERMISSION_REQUEST = 1001;
 
 	private boolean gameInitialized;
 
 	@Override
 	protected void onCreate (Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
+
+		// Bind internal storage before anything can touch the filesystem.
+		InternalStorage.init(this);
 
 		DeviceInfo.info = new DeviceInfo() {
 			@Override
@@ -45,23 +54,25 @@ public class AndroidLauncher extends AndroidApplication {
 
 			@Override
 			public File getDownloadDir() {
-				if (!hasLegacyStoragePermission())
-					return null;
-				return new File(new FileHandle(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)));
+				// Downloads land in the private Import folder. The public
+				// Downloads directory lives on external storage and is
+				// off-limits under the internal-storage-only policy.
+				return new File(new FileHandle(InternalStorage.getImportDir()));
 			}
 		};
 
-		if (hasLegacyStoragePermission()) {
-			initializeGame();
-		} else {
+		// Migration is the only reason this app would ever read external
+		// storage, so fresh installs are never prompted for a permission.
+		if (StorageMigration.isNeeded() && !hasLegacyReadPermission()) {
 			requestPermissions(
-				new String[] {
-					Manifest.permission.READ_EXTERNAL_STORAGE,
-					Manifest.permission.WRITE_EXTERNAL_STORAGE
-				},
-				STORAGE_PERMISSION_REQUEST
+				new String[] { Manifest.permission.READ_EXTERNAL_STORAGE },
+				MIGRATION_PERMISSION_REQUEST
 			);
+			return;
 		}
+
+		StorageMigration.migrateIfNeeded();
+		initializeGame();
 	}
 
 	@Override
@@ -71,13 +82,19 @@ public class AndroidLauncher extends AndroidApplication {
 		int[] grantResults
 	) {
 		super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-		if (requestCode == STORAGE_PERMISSION_REQUEST)
+		if (requestCode == MIGRATION_PERMISSION_REQUEST) {
+			// Migration is best-effort. Start the game whether or not the
+			// permission was granted; a denied prompt just means the legacy
+			// files stay where they are.
+			StorageMigration.migrateIfNeeded();
 			initializeGame();
+		}
 	}
 
-	private boolean hasLegacyStoragePermission() {
+	/** Whether legacy external storage can be read, for migration purposes. */
+	private boolean hasLegacyReadPermission() {
 		return Build.VERSION.SDK_INT < 23 ||
-			checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+			checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) ==
 				PackageManager.PERMISSION_GRANTED;
 	}
 

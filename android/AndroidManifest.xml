@@ -1,8 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <!--
+        All user files (beatmaps, skins, scores, replays, screenshots and
+        seasonal backgrounds) live in private internal storage, so no write
+        permission is needed. READ_EXTERNAL_STORAGE is retained only to migrate
+        a pre-1.1 external tree into internal storage on first launch after
+        upgrade, and can be removed once that migration release has shipped.
+    -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 

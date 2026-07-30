@@ -1,0 +1,72 @@
+Subject: [PATCH] Add the Seasonal Backgrounds settings toggle
+
+Adds the SEASONAL_BACKGROUNDS boolean option, an isSeasonalBackgroundEnabled()
+accessor, and getSeasonalBackgroundDir(), which creates the folder if it does
+not exist. The directory resolves inside internal storage because every File
+in this build now resolves to Gdx.files.local, i.e. Context.getFilesDir() on
+Android.
+
+Inserting a new enum constant mid-list is safe: parseOptions() builds a
+HashMap keyed by getDisplayName() and looks options up by name, so nothing
+depends on ordinal order and existing opsu.cfg files keep working. The option
+defaults to false so behaviour is unchanged until a user opts in.
+
+Registering it in the MAIN MENU group is what actually makes it render, since
+OptionsOverlay draws OptionGroup.ALL_OPTIONS rather than GameOption.values().
+---
+ a/src/itdelatrisu/opsu/options/OptionGroup.java |  1 +
+ a/src/itdelatrisu/opsu/options/Options.java     | 27 ++++++++++++++++
+ 2 files changed, 28 insertions(+)
+
+diff --git a/src/itdelatrisu/opsu/options/Options.java b/src/itdelatrisu/opsu/options/Options.java
+--- a/src/itdelatrisu/opsu/options/Options.java
++++ b/src/itdelatrisu/opsu/options/Options.java
+@@ -640,4 +640,5 @@
+ 		},
+ 		DYNAMIC_BACKGROUND ("Dynamic backgrounds", "DynamicBackground", "The current beatmap background will be used as the main menu background.", true),
++		SEASONAL_BACKGROUNDS ("Seasonal Backgrounds", "SeasonalBackgrounds", "Randomly use images from your 'seasonalbackground' folder as the main menu background.\nDrop any number of PNG or JPG files into that folder.", false),
+ 		LOAD_VERBOSE ("Detailed loading progress", "LoadVerbose", "Display more verbose loading progress in the splash screen.", false),
+ 		MASTER_VOLUME ("Master", "VolumeUniversal", "Global volume level.", 35, 0, 100) {
+@@ -1000,6 +1001,32 @@
+ 	public static boolean isDynamicBackgroundEnabled() { return GameOption.DYNAMIC_BACKGROUND.getBooleanValue(); }
+ 
++	/**
++	 * Returns whether or not seasonal backgrounds are enabled.
++	 * @return true if enabled
++	 */
++	public static boolean isSeasonalBackgroundEnabled() { return GameOption.SEASONAL_BACKGROUNDS.getBooleanValue(); }
++
++	/** The seasonal background directory (created when needed). */
++	private static File seasonalBackgroundDir;
++
++	/**
++	 * Returns the seasonal background directory, creating it if it does not
++	 * exist. This resolves inside internal storage because every File in this
++	 * build resolves to Gdx.files.local (Context.getFilesDir() on Android).
++	 * @return the seasonalbackground directory
++	 */
++	public static File getSeasonalBackgroundDir() {
++		if (seasonalBackgroundDir != null && seasonalBackgroundDir.isDirectory())
++			return seasonalBackgroundDir;
++
++		seasonalBackgroundDir = new File(DATA_DIR, "seasonalbackground/");
++		if (!seasonalBackgroundDir.isDirectory() && !seasonalBackgroundDir.mkdir())
++			ErrorHandler.error(String.format("Failed to create seasonal background directory at '%s'.",
++				seasonalBackgroundDir.getAbsolutePath()), null, false);
++		return seasonalBackgroundDir;
++	}
++
+ 	/**
+ 	 * Returns whether or not to show perfect hit result bursts.
+ 	 * @return true if enabled
+ 	 */
+diff --git a/src/itdelatrisu/opsu/options/OptionGroup.java b/src/itdelatrisu/opsu/options/OptionGroup.java
+--- a/src/itdelatrisu/opsu/options/OptionGroup.java
++++ b/src/itdelatrisu/opsu/options/OptionGroup.java
+@@ -78,5 +78,6 @@
+ 		new OptionGroup("MAIN MENU", new GameOption[] {
+ 			GameOption.DYNAMIC_BACKGROUND,
++			GameOption.SEASONAL_BACKGROUNDS,
+ 			GameOption.PARALLAX,
+ 			GameOption.ENABLE_THEME_SONG,
+ 		}),

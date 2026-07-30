@@ -1,6 +1,12 @@
+Remove debug logging from the texture dereference hot path.
+
+ImageRefInfo.remove() printed to stdout on every image dereference, which
+happens frequently during gameplay and on every skin/beatmap transition.
+Each call built a string and performed synchronous console I/O.
+
 --- a/src/fluddokt/opsu/fake/Image.java
 +++ b/src/fluddokt/opsu/fake/Image.java
-@@ -56,8 +56,6 @@
+@@ -88,9 +88,7 @@
  		public void remove(Image img) {
  			refcnt--;
 -			System.out.println("RefCnt :"+fh+" "+refcnt);
@@ -9,3 +15,4 @@
  				imgmap.remove(name);
  				atlas.remove(this);
  			}
+ 		}

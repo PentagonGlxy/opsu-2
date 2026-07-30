@@ -1,0 +1,99 @@
+Eliminate per-digit Image allocation in symbol drawing.
+
+drawSymbolNumber, drawSymbolString and drawFixedSizeSymbolString each called
+getScaledCopy() once per character per frame, allocating a throwaway Image
+each time. Between them these render the score readout, the accuracy
+percentage, the combo counter and the combo number on every hit circle, so
+they are the largest per-frame allocation source in the gameplay path.
+
+Image.draw(x, y, w, h) renders at an arbitrary size from the same
+TextureRegion without allocating.
+
+Behavioural note: the digit images are now shared GameImage instances rather
+than per-draw copies, so setAlpha() mutates shared state and persists.
+drawSymbolNumber therefore gains a setAlpha(1f) reset that the original did
+not need. drawSymbolString and drawFixedSizeSymbolString already reset alpha.
+
+The advance width is now computed as a float (width * scale) instead of
+reading getWidth() off a scaled copy, which truncated to int. This makes
+glyph advance marginally more precise rather than less.
+
+--- a/src/itdelatrisu/opsu/GameData.java
++++ b/src/itdelatrisu/opsu/GameData.java
+@@ -470,13 +470,15 @@
+ 	public void drawSymbolNumber(int n, float x, float y, float scale, float alpha) {
+ 		int length = (int) (Math.log10(n) + 1);
+ 		float digitWidth = getDefaultSymbolImage(0).getWidth() * scale;
++		float digitHeight = getDefaultSymbolImage(0).getHeight() * scale;
+ 		float cx = x + ((length - 1) * (digitWidth / 2));
+ 
+ 		for (int i = 0; i < length; i++) {
+-			Image digit = getDefaultSymbolImage(n % 10).getScaledCopy(scale);
+-			digit.setAlpha(alpha);
+-			digit.drawCentered(cx, y);
++			Image digit = getDefaultSymbolImage(n % 10);
++			digit.setAlpha(alpha);
++			digit.draw(cx - digitWidth / 2f, y - digitHeight / 2f, digitWidth, digitHeight);
++			digit.setAlpha(1f);
+ 			cx -= digitWidth;
+ 			n /= 10;
+ 		}
+ 	}
+@@ -497,21 +497,21 @@
+ 		if (rightAlign) {
+ 			for (int i = c.length - 1; i >= 0; i--) {
+ 				Image digit = getScoreSymbolImage(c[i]);
+-				if (scale != 1.0f)
+-					digit = digit.getScaledCopy(scale);
+-				cx -= digit.getWidth();
++				float dw = digit.getWidth() * scale;
++				float dh = digit.getHeight() * scale;
++				cx -= dw;
+ 				digit.setAlpha(alpha);
+-				digit.draw(cx, y);
++				digit.draw(cx, y, dw, dh);
+ 				digit.setAlpha(1f);
+ 			}
+ 		} else {
+ 			for (int i = 0; i < c.length; i++) {
+ 				Image digit = getScoreSymbolImage(c[i]);
+-				if (scale != 1.0f)
+-					digit = digit.getScaledCopy(scale);
++				float dw = digit.getWidth() * scale;
++				float dh = digit.getHeight() * scale;
+ 				digit.setAlpha(alpha);
+-				digit.draw(cx, y);
++				digit.draw(cx, y, dw, dh);
+ 				digit.setAlpha(1f);
+-				cx += digit.getWidth();
++				cx += dw;
+ 			}
+ 		}
+@@ -531,21 +531,21 @@
+ 		if (rightAlign) {
+ 			for (int i = c.length - 1; i >= 0; i--) {
+ 				Image digit = getScoreSymbolImage(c[i]);
+-				if (scale != 1.0f)
+-					digit = digit.getScaledCopy(scale);
+ 				cx -= fixedsize;
++				float dw = digit.getWidth() * scale;
++				float dh = digit.getHeight() * scale;
+ 				digit.setAlpha(alpha);
+-				digit.draw(cx + (fixedsize - digit.getWidth()) / 2, y);
++				digit.draw(cx + (fixedsize - dw) / 2, y, dw, dh);
+ 				digit.setAlpha(1f);
+ 			}
+ 		} else {
+ 			for (int i = 0; i < c.length; i++) {
+ 				Image digit = getScoreSymbolImage(c[i]);
+-				if (scale != 1.0f)
+-					digit = digit.getScaledCopy(scale);
++				float dw = digit.getWidth() * scale;
++				float dh = digit.getHeight() * scale;
+ 				digit.setAlpha(alpha);
+-				digit.draw(cx + (fixedsize - digit.getWidth()) / 2, y);
++				digit.draw(cx + (fixedsize - dw) / 2, y, dw, dh);
+ 				digit.setAlpha(1f);
+ 				cx += fixedsize;
+ 			}
+ 		}

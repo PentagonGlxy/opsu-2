@@ -1,0 +1,21 @@
+Drop the explicit System.gc() on track change.
+
+MusicController.play() called Utils.gc(false) immediately after reset() for
+every new track. Utils.gc can invoke System.gc(), producing a stall at the
+exact moment the player transitions to a new song. The generational
+collector reclaims the short-lived objects from track teardown without a
+forced full collection.
+
+The itdelatrisu.opsu.Utils import becomes unused, which is a javac warning
+rather than an error, so the import is left in place.
+
+--- a/src/itdelatrisu/opsu/audio/MusicController.java
++++ b/src/itdelatrisu/opsu/audio/MusicController.java
+@@ -101,7 +101,6 @@
+ 				return;
+ 			}
+ 
+ 			reset();
+-			Utils.gc(false);
+ 
+ 			switch (BeatmapParser.getExtension(beatmap.audioFilename.getName())) {

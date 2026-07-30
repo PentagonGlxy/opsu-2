@@ -1,0 +1,11 @@
+--- a/src/fluddokt/opsu/fake/Image.java
++++ b/src/fluddokt/opsu/fake/Image.java
+@@ -56,8 +56,6 @@
+ 		public void remove(Image img) {
+ 			refcnt--;
+-			System.out.println("RefCnt :"+fh+" "+refcnt);
+ 			if (refcnt <= 0) {
+-				System.out.println("Remove TextureInfo :" + fh);
+ 				imgmap.remove(name);
+ 				atlas.remove(this);
+ 			}

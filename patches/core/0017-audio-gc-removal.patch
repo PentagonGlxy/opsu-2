@@ -1,0 +1,14 @@
+--- a/src/itdelatrisu/opsu/audio/MusicController.java
++++ b/src/itdelatrisu/opsu/audio/MusicController.java
+@@ -75,8 +75,6 @@
+ 		if (lastBeatmap == null || !beatmap.audioFilename.equals(lastBeatmap.audioFilename)) {
+ 			final File audioFile = beatmap.audioFilename;
+ 			if (!audioFile.isFile() && !ResourceLoader.resourceExists(audioFile.getPath())) {
+ 				UI.getNotificationManager().sendBarNotification(String.format("Could not find track '%s'.", audioFile.getName()));
+ 				return;
+ 			}
+ 
+ 			reset();
+-			Utils.gc(false);
+ 
+ 			switch (BeatmapParser.getExtension(beatmap.audioFilename.getName())) {

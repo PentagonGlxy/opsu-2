@@ -1,0 +1,13 @@
+--- a/src/itdelatrisu/opsu/objects/Circle.java
++++ b/src/itdelatrisu/opsu/objects/Circle.java
+@@ -100,8 +100,11 @@
+ 		Colors.WHITE_FADE.a = color.a = alpha;
+ 
+ 		if (timeDiff >= 0 && !GameMod.HIDDEN.isActive())
+-			GameImage.APPROACHCIRCLE.getImage().getScaledCopy(approachScale).drawCentered(x, y, color);
++			Image ac = GameImage.APPROACHCIRCLE.getImage();
++			float acw = ac.getWidth() * approachScale;
++			float ach = ac.getHeight() * approachScale;
++			ac.draw(x - acw / 2f, y - ach / 2f, acw, ach, color);
+ 		GameImage.HITCIRCLE.getImage().drawCentered(x, y, color);
+ 		boolean overlayAboveNumber = Options.getSkin().isHitCircleOverlayAboveNumber();

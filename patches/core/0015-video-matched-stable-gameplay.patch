@@ -1,0 +1,203 @@
+diff --git a/src/itdelatrisu/opsu/GameData.java b/src/itdelatrisu/opsu/GameData.java
+index 7f6f5f50..181de788 100644
+--- a/src/itdelatrisu/opsu/GameData.java
++++ b/src/itdelatrisu/opsu/GameData.java
+@@ -85,11 +85,14 @@ public class GameData {
+ 	/** Time, in milliseconds, for the hit result text to fade. */
+ 	private static final int HITCIRCLE_TEXT_FADE_TIME = 833;
+ 
+-	/** Time, in milliseconds, for a stable-style judgement to pop into place. */
+-	private static final int STABLE_RESULT_POP_TIME = 120;
+-
+ 	/** Delay, in milliseconds, before a stable-style judgement fades. */
+-	private static final int STABLE_RESULT_FADE_DELAY = 240;
++	private static final int STABLE_RESULT_FADE_DELAY = 120;
++
++	/** Height of stable-style combo numbers relative to the hit-circle diameter. */
++	private static final float STABLE_HITCIRCLE_NUMBER_RATIO = 0.30f;
++
++	/** Height of legacy combo numbers relative to the hit-circle diameter. */
++	private static final float LEGACY_HITCIRCLE_NUMBER_RATIO = 0.40f;
+ 
+ 	/** Letter grades. */
+ 	public enum Grade {
+@@ -543,6 +546,18 @@ public class GameData {
+ 		}
+ 	}
+ 
++	/**
++	 * Returns the scale for combo numbers drawn inside hit circles.
++	 * Stable's default gameplay presentation leaves noticeably more space around
++	 * these digits than opsu!'s original renderer.
++	 * @param hitCircleWidth the rendered hit-circle width
++	 */
++	public float getHitCircleNumberScale(float hitCircleWidth) {
++		float ratio = Options.isStableHitObjectAnimationsEnabled() ?
++				STABLE_HITCIRCLE_NUMBER_RATIO : LEGACY_HITCIRCLE_NUMBER_RATIO;
++		return hitCircleWidth * ratio / getDefaultSymbolImage(0).getHeight();
++	}
++
+ 	/**
+ 	 * Draws a string of scoreSymbols.
+ 	 * @param str the string to draw
+@@ -1092,7 +1107,7 @@ public class GameData {
+ 							float lightingProgress = AnimationEquation.OUT_CUBIC.calc(
+ 									(float) Utils.clamp(trackPosition - hitResult.time, 0, HITCIRCLE_FADE_TIME) /
+ 									HITCIRCLE_FADE_TIME);
+-							lighting = lighting.getScaledCopy(0.82f + 0.38f * lightingProgress);
++							lighting = lighting.getScaledCopy(0.96f + 0.12f * lightingProgress);
+ 						}
+ 						lighting.setAlpha(hitResult.alpha);
+ 						lighting.drawCentered(hitResult.x, hitResult.y, hitResult.color);
+@@ -1110,16 +1125,12 @@ public class GameData {
+ 						float alpha;
+ 						float resultY = hitResult.y;
+ 						if (Options.isStableHitObjectAnimationsEnabled()) {
+-							float popProgress = AnimationEquation.OUT_BACK.calc(
+-									(float) Utils.clamp(elapsed, 0, STABLE_RESULT_POP_TIME) /
+-									STABLE_RESULT_POP_TIME);
+-							scale = 0.78f + 0.22f * popProgress;
++							scale = 1f;
+ 							float fadeProgress = AnimationEquation.OUT_QUAD.calc(
+ 									(float) Utils.clamp(elapsed - STABLE_RESULT_FADE_DELAY, 0,
+ 									HITCIRCLE_TEXT_FADE_TIME - STABLE_RESULT_FADE_DELAY) /
+ 									(HITCIRCLE_TEXT_FADE_TIME - STABLE_RESULT_FADE_DELAY));
+ 							alpha = 1f - fadeProgress;
+-							resultY -= 8f * fadeProgress;
+ 						} else {
+ 							float scaleProgress = AnimationEquation.IN_OUT_BOUNCE.calc(
+ 								(float) Utils.clamp(elapsed, 0, HITCIRCLE_TEXT_BOUNCE_TIME) /
+@@ -1197,7 +1208,7 @@ public class GameData {
+ 			float progress = AnimationEquation.OUT_CUBIC.calc(
+ 				(float) Utils.clamp(trackPosition - hitResult.time, 0, HITCIRCLE_FADE_TIME) / HITCIRCLE_FADE_TIME);
+ 			float scale = stableAnimations ?
+-					0.85f + 0.35f * progress : 1f - 0.2f * progress;
++					0.96f + 0.12f * progress : 1f - 0.2f * progress;
+ 			float alpha = 1f - progress;
+ 			Image fc = GameImage.SLIDER_FOLLOWCIRCLE.getImage().getScaledCopy(scale);
+ 			fc.setAlpha(alpha);
+@@ -1213,7 +1224,10 @@ public class GameData {
+ 		float progress = (stableAnimations ? AnimationEquation.OUT_QUAD : AnimationEquation.OUT_CUBIC).calc(
+ 			(float) Utils.clamp(trackPosition - hitResult.time, 0, HITCIRCLE_FADE_TIME) / HITCIRCLE_FADE_TIME);
+ 		float scale;
+-		if (hitResult.result == HIT_MISS)
++		if (stableAnimations)
++			scale = (hitResult.result == HIT_MISS || !hitResult.expand) ?
++					1f : 1f + 0.08f * progress;
++		else if (hitResult.result == HIT_MISS)
+ 			scale = 1f - 0.06f * progress;
+ 		else
+ 			scale = (!hitResult.expand) ? 1f : 1f + (HITCIRCLE_ANIM_SCALE - 1f) * progress;
+diff --git a/src/itdelatrisu/opsu/objects/Circle.java b/src/itdelatrisu/opsu/objects/Circle.java
+index 4ff0f7bf..c2e39328 100644
+--- a/src/itdelatrisu/opsu/objects/Circle.java
++++ b/src/itdelatrisu/opsu/objects/Circle.java
+@@ -31,7 +31,6 @@ import itdelatrisu.opsu.objects.curves.Vec2f;
+ import itdelatrisu.opsu.options.Options;
+ import itdelatrisu.opsu.states.Game;
+ import itdelatrisu.opsu.ui.Colors;
+-import itdelatrisu.opsu.ui.animations.AnimationEquation;
+ 
+ /*
+ import org.newdawn.slick.Color;
+@@ -104,8 +103,6 @@ public class Circle implements GameObject {
+ 		float fadeinScale = (timeDiff - approachTime + fadeInTime) / (float) fadeInTime;
+ 		float appearanceProgress = Utils.clamp(1 - fadeinScale, 0, 1);
+ 		float alpha = appearanceProgress;
+-		float objectScale = Options.isStableHitObjectAnimationsEnabled() ?
+-				0.82f + 0.18f * AnimationEquation.OUT_CUBIC.calc(appearanceProgress) : 1f;
+ 
+ 		if (GameMod.HIDDEN.isActive()) {
+ 			final int hiddenDecayTime = game.getHiddenDecayTime();
+@@ -123,17 +120,12 @@ public class Circle implements GameObject {
+ 			GameImage.APPROACHCIRCLE.getImage().getScaledCopy(approachScale).drawCentered(x, y, color);
+ 		Image hitCircle = GameImage.HITCIRCLE.getImage();
+ 		Image hitCircleOverlay = GameImage.HITCIRCLE_OVERLAY.getImage();
+-		if (objectScale != 1f) {
+-			hitCircle = hitCircle.getScaledCopy(objectScale);
+-			hitCircleOverlay = hitCircleOverlay.getScaledCopy(objectScale);
+-		}
+ 		hitCircle.drawCentered(x, y, color);
+ 		boolean overlayAboveNumber = Options.getSkin().isHitCircleOverlayAboveNumber();
+ 		if (!overlayAboveNumber)
+ 			hitCircleOverlay.drawCentered(x, y, Colors.WHITE_FADE);
+ 		data.drawSymbolNumber(hitObject.getComboNumber(), x, y,
+-				GameImage.HITCIRCLE.getImage().getWidth() * 0.40f /
+-				data.getDefaultSymbolImage(0).getHeight() * objectScale, alpha);
++				data.getHitCircleNumberScale(hitCircle.getWidth()), alpha);
+ 		if (overlayAboveNumber)
+ 			hitCircleOverlay.drawCentered(x, y, Colors.WHITE_FADE);
+ 
+diff --git a/src/itdelatrisu/opsu/objects/Slider.java b/src/itdelatrisu/opsu/objects/Slider.java
+index 33df2dc6..a654d312 100644
+--- a/src/itdelatrisu/opsu/objects/Slider.java
++++ b/src/itdelatrisu/opsu/objects/Slider.java
+@@ -315,8 +315,7 @@ public class Slider implements GameObject {
+ 		// draw combo number and overlay if not initially clicked
+ 		if (!sliderClickedInitial) {
+ 			data.drawSymbolNumber(hitObject.getComboNumber(), x, y,
+-				hitCircle.getWidth() * 0.40f / data.getDefaultSymbolImage(0).getHeight() *
+-				entranceScale, alpha);
++				data.getHitCircleNumberScale(hitCircle.getWidth()) * entranceScale, alpha);
+ 
+ 			if (overlayAboveNumber) {
+ 				startCircleOverlayColor.a = sliderAlpha;
+@@ -459,13 +458,11 @@ public class Slider implements GameObject {
+ 	}
+ 
+ 	/**
+-	 * Returns the scale used while hit objects and slider caps appear.
++	 * Returns the scale used while hit objects and slider caps appear.  Stable
++	 * fades objects in at their final size instead of growing them into place.
+ 	 */
+ 	private float getHitObjectScale(float progress) {
+-		if (!Options.isStableHitObjectAnimationsEnabled())
+-			return 1f;
+-		return 0.82f + 0.18f * AnimationEquation.OUT_CUBIC.calc(
+-				Utils.clamp(progress, 0f, 1f));
++		return 1f;
+ 	}
+ 
+ 	/**
+diff --git a/src/itdelatrisu/opsu/options/Options.java b/src/itdelatrisu/opsu/options/Options.java
+index 660c328e..0ba0a079 100644
+--- a/src/itdelatrisu/opsu/options/Options.java
++++ b/src/itdelatrisu/opsu/options/Options.java
+@@ -760,7 +760,7 @@ public class Options {
+ 		},
+ 		NEW_SLIDER("Enable New Slider", "NewSlider", "Use the new Slider style.",true),
+ 		SMOOTH_SLIDERS ("Smooth slider animations", "SmoothSliders", "Use precise slider-ball movement, smoother paths, animated follow circles,\nand BPM-pulsing reverse arrows like osu!stable.", true),
+-		STABLE_HITOBJECT_ANIMATIONS ("Stable hitobject animations", "StableHitObjectAnimations", "Add smooth scale-and-fade entrances, animated slider caps,\nand cleaner hit, miss, lighting, and judgement motion.", true),
++		STABLE_HITOBJECT_ANIMATIONS ("Stable hitobject animations", "StableHitObjectAnimations", "Match osu!stable's fixed-size fades, compact hit numbers,\nand centered judgement and follow-point motion.", true),
+ 		
+ 		SLIDER_QUALITY ("Old Slider Quality", "SliderQuality", "Lower values for better-looking sliders (in the old slider style).", 1, 1, 7){
+ 			@Override
+diff --git a/src/itdelatrisu/opsu/states/Game.java b/src/itdelatrisu/opsu/states/Game.java
+index fe14dacd..862a76df 100644
+--- a/src/itdelatrisu/opsu/states/Game.java
++++ b/src/itdelatrisu/opsu/states/Game.java
+@@ -1834,7 +1834,7 @@ public class Game extends BasicGameState {
+ 
+ 			// draw follow points
+ 			if (Options.isFollowPointEnabled() && !loseState)
+-				lastObjectIndex = drawFollowPointsBetween(tObjectIndex, lastObjectIndex, trackPosition);
++				lastObjectIndex = drawFollowPointsBetween(index, lastObjectIndex, trackPosition);
+ 		}
+ 		if (spinnerIndex != -1)
+ 			stack.add(spinnerIndex);
+@@ -1938,8 +1938,14 @@ public class Game extends BasicGameState {
+ 							followPoint.setAlpha(1f);
+ 						followPoint.drawCentered(x, y);
+ 					}
+-				} else
++				} else {
++					if (Options.isStableHitObjectAnimationsEnabled()) {
++						float pointDelay = (i / (float) numPoints) * 0.35f;
++						followPoint.setAlpha(Utils.clamp(
++								(alpha - pointDelay) / (1f - pointDelay), 0f, 1f));
++					}
+ 					followPoint.drawCentered(x, y);
++				}
+ 				t = nextT;
+ 			}
+ 			followPoint.setAlpha(1f);

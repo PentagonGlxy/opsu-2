@@ -1,0 +1,327 @@
+diff --git a/src/fluddokt/opsu/fake/AudioDevicePlayer2.java b/src/fluddokt/opsu/fake/AudioDevicePlayer2.java
+index 47640224..e7618e92 100644
+--- a/src/fluddokt/opsu/fake/AudioDevicePlayer2.java
++++ b/src/fluddokt/opsu/fake/AudioDevicePlayer2.java
+@@ -54,10 +54,10 @@ public class AudioDevicePlayer2 extends AudioDevicePlayer {
+ 
+ 	class PlayThread extends Thread {
+ 		volatile boolean toStop = false;
+-		boolean initedAD = false;
+-		boolean audioUsed = false;
++		volatile boolean initedAD = false;
++		volatile boolean audioUsed = false;
+ 
+-		AudioDevice ad;
++		volatile AudioDevice ad;
+ 		public PlayThread(){
+ 			super("PlayThread "+name);
+ 		}
+@@ -109,14 +109,11 @@ public class AudioDevicePlayer2 extends AudioDevicePlayer {
+ 					} else
+ 						len = currentStream.read(rbuf);
+ 					if (!initedAD) {
+-						initedAD = true;
+ 						System.out.println("PlayThread Music Init AD "+sampleRate+" "+channels);
+-						if (ad != null && audioUsed) {
+-							ad.dispose();
+-						}
+-						audioUsed = false;
++						releaseAudioDevice();
+ 						//ad = Gdx.audio.newAudioDevice((int) (sampleRate * pitch), channels == 1);
+ 						ad = Gdx.audio.newAudioDevice(sampleRate, channels == 1);
++						initedAD = true;
+ 						//// write 0's to start with to get rid of garbage
+ 						//ad.writeSamples(new short[0x4000], 0, 0x4000);
+ 						//audioUsed = true;
+@@ -234,11 +231,7 @@ public class AudioDevicePlayer2 extends AudioDevicePlayer {
+ 				e.printStackTrace();
+ 				System.out.println(e+" "+name);
+ 			}
+-			if (ad != null && audioUsed) {
+-				ad.dispose();
+-				audioUsed = false;
+-				initedAD = false;
+-			}
++			releaseAudioDevice();
+ 			if(stop){
+ 				closeStream();
+ 				System.out.println("Track  Complete");
+@@ -249,6 +242,21 @@ public class AudioDevicePlayer2 extends AudioDevicePlayer {
+ 			System.out.println("PlayThread stoped " + name+" "+threadCount);
+ 		}
+ 
++		/** Releases this thread's output device exactly once. */
++		private synchronized void releaseAudioDevice() {
++			AudioDevice device = ad;
++			ad = null;
++			audioUsed = false;
++			initedAD = false;
++			if (device != null) {
++				try {
++					device.dispose();
++				} catch (RuntimeException e) {
++					System.err.println("Failed to release audio output: " + e);
++				}
++			}
++		}
++
+ 	}
+ 	private void resetStream() throws IOException{
+ 		//*
+@@ -289,10 +297,11 @@ public class AudioDevicePlayer2 extends AudioDevicePlayer {
+ 		resetStream();
+ 	}
+ 
+-	private void startThread() {
++	private synchronized void startThread() {
+ 		System.out.println("ADP startThread "+ name+" "+Thread.currentThread());
+ 		//synchronized (playThreadLock) {
+-			stopThread();
++			if (!stopThread())
++				return;
+ 			if(currentStream == null)
+ 				try {
+ 					resetStream();
+@@ -307,23 +316,32 @@ public class AudioDevicePlayer2 extends AudioDevicePlayer {
+ 			}
+ 		//}
+ 	}
+-	private void stopThread() {
+-		//*
+-		//synchronized (playThreadLock) {
+-			if (playThread != null) {
+-				System.out.println("ADP stopThread "+ name+" "+Thread.currentThread());
+-				try {
+-					playThread.toStop = true;
+-					playThread.interrupt();
+-					//playThread.join();
+-					playThread = null;
+-					Thread.sleep(1);
+-				} catch (InterruptedException e) {
+-					e.printStackTrace();
+-				}
++	private synchronized boolean stopThread() {
++		PlayThread thread = playThread;
++		if (thread == null)
++			return true;
++
++		System.out.println("ADP stopThread "+ name+" "+Thread.currentThread());
++		thread.toStop = true;
++		thread.interrupt();
++		if (thread == Thread.currentThread())
++			return false;
++
++		try {
++			thread.join(500);
++			if (thread.isAlive()) {
++				thread.releaseAudioDevice();
++				thread.interrupt();
++				thread.join(500);
+ 			}
+-		//}//*/
++		} catch (InterruptedException e) {
++			Thread.currentThread().interrupt();
++		}
+ 		
++		// Never start a replacement while the old device can still output audio.
++		if (!thread.isAlive() && playThread == thread)
++			playThread = null;
++		return !thread.isAlive();
+ 	}
+ 	
+ 	public boolean setPosition(float f) {
+@@ -352,7 +370,7 @@ public class AudioDevicePlayer2 extends AudioDevicePlayer {
+ 
+ 	public void setVolume(float nvolume) {
+ 		System.out.println("setVolume Play " + name+" "+Thread.currentThread());
+-		volume = nvolume;
++		volume = Math.max(0f, Math.min(1f, nvolume));
+ 	}
+ 
+ 
+diff --git a/src/fluddokt/opsu/fake/AudioDevicePlayer3.java b/src/fluddokt/opsu/fake/AudioDevicePlayer3.java
+index 97cf2189..fea0ce73 100644
+--- a/src/fluddokt/opsu/fake/AudioDevicePlayer3.java
++++ b/src/fluddokt/opsu/fake/AudioDevicePlayer3.java
+@@ -54,11 +54,11 @@ public class AudioDevicePlayer3 extends AudioDevicePlayer{
+ 	boolean initData = false;
+ 
+ 	class PlayThread extends Thread {
+-		boolean toStop = false;
+-		boolean initedAD = false;
+-		boolean audioUsed = false;
++		volatile boolean toStop = false;
++		volatile boolean initedAD = false;
++		volatile boolean audioUsed = false;
+ 
+-		AudioDevice ad;
++		volatile AudioDevice ad;
+ 		public PlayThread(){
+ 			super("PlayThread "+name);
+ 		}
+@@ -120,14 +120,11 @@ public class AudioDevicePlayer3 extends AudioDevicePlayer{
+ 							int len = buf.getBufferLength();
+ 							buf.clear_buffer();
+ 							if (!initedAD) {
+-								initedAD = true;
+ 								System.out.println("PlayThread Music Init");
+-								if (ad != null && audioUsed) {
+-									ad.dispose();
+-								}
+-								audioUsed = false;
++								releaseAudioDevice();
+ 								ad = Gdx.audio.newAudioDevice(sampleRate,
+ 										channels == 1);
++								initedAD = true;
+ 								// write 0's to start with to get rid of garbage
+ 								//ad.writeSamples(new short[200], 0, 200);
+ 								//audioUsed = true;
+@@ -166,11 +163,7 @@ public class AudioDevicePlayer3 extends AudioDevicePlayer{
+ 				e.printStackTrace();
+ 				System.out.println(e+" "+name);
+ 			}
+-			if (ad != null && audioUsed) {
+-				ad.dispose();
+-				audioUsed = false;
+-				initedAD = false;
+-			}
++			releaseAudioDevice();
+ 			if(stop){
+ 				if (bitstream != null) {
+ 					try {
+@@ -187,6 +180,21 @@ public class AudioDevicePlayer3 extends AudioDevicePlayer{
+ 			System.out.println("Thread stoped " + name+" "+threadCount);
+ 		}
+ 
++		/** Releases this thread's output device exactly once. */
++		private synchronized void releaseAudioDevice() {
++			AudioDevice device = ad;
++			ad = null;
++			audioUsed = false;
++			initedAD = false;
++			if (device != null) {
++				try {
++					device.dispose();
++				} catch (RuntimeException e) {
++					System.err.println("Failed to release audio output: " + e);
++				}
++			}
++		}
++
+ 	}
+ 	private void resetStream(){
+ 		if (bitstream != null) {
+@@ -213,7 +221,8 @@ public class AudioDevicePlayer3 extends AudioDevicePlayer{
+ 
+ 	//TODO pre decode some data before starting the thread?
+ 	private synchronized void startThread() {
+-		stopThread();
++		if (!stopThread())
++			return;
+ 		if(bitstream == null)
+ 			resetStream();
+ 		if (playThread == null){
+@@ -221,18 +230,31 @@ public class AudioDevicePlayer3 extends AudioDevicePlayer{
+ 			playThread.start();
+ 		}
+ 	}
+-	private synchronized void stopThread() {
+-		if (playThread != null) {
+-			try {
+-				playThread.toStop = true;
+-				playThread.interrupt();
+-//				playThread.join();
+-				playThread = null;
+-				Thread.sleep(1);
+-			} catch (InterruptedException e) {
+-				e.printStackTrace();
++	private synchronized boolean stopThread() {
++		PlayThread thread = playThread;
++		if (thread == null)
++			return true;
++
++		thread.toStop = true;
++		thread.interrupt();
++		if (thread == Thread.currentThread())
++			return false;
++
++		try {
++			thread.join(500);
++			if (thread.isAlive()) {
++				thread.releaseAudioDevice();
++				thread.interrupt();
++				thread.join(500);
+ 			}
++		} catch (InterruptedException e) {
++			Thread.currentThread().interrupt();
+ 		}
++
++		// Never start a replacement while the old device can still output audio.
++		if (!thread.isAlive() && playThread == thread)
++			playThread = null;
++		return !thread.isAlive();
+ 	}
+ 	
+ 	public boolean setPosition(float f) {
+@@ -254,20 +276,22 @@ public class AudioDevicePlayer3 extends AudioDevicePlayer{
+ 	}
+ 
+ 	public void setVolume(float nvolume) {
+-		volume = nvolume;
++		volume = Math.max(0f, Math.min(1f, nvolume));
+ 	}
+ 
+ 
+ 	public void play() {
+ 		System.out.println("PlayThread Play "+name);
+-		stopThread();
++		if (!stopThread())
++			return;
+ 		resetStream();
+ 		setLoop(false);
+ 		startThread();
+ 	}
+ 	public void loop() {
+ 		System.out.println("PlayThread Loop "+name);
+-		stopThread();
++		if (!stopThread())
++			return;
+ 		resetStream();
+ 		setLoop(true);
+ 		startThread();
+diff --git a/src/fluddokt/opsu/fake/Music.java b/src/fluddokt/opsu/fake/Music.java
+index 5c5b530c..bbe8f85e 100644
+--- a/src/fluddokt/opsu/fake/Music.java
++++ b/src/fluddokt/opsu/fake/Music.java
+@@ -69,6 +69,7 @@ public class Music implements AbsMusicCompleteListener{
+ 	}
+ 
+ 	public void setVolume(float volume) {
++		setMusicVolume(volume);
+ 	}
+ 
+ 	public void stop() {
+@@ -163,8 +164,8 @@ public class Music implements AbsMusicCompleteListener{
+ 	}
+ 
+ 	public void setMusicVolume(float musvolume) {
+-		music.setVolume(musvolume);
+-		volume = musvolume;
++		volume = Math.max(0f, Math.min(1f, musvolume));
++		music.setVolume(volume);
+ 	}
+ 
+ 	public void addListener(MusicListener musicListener) {
+diff --git a/src/itdelatrisu/opsu/audio/MusicController.java b/src/itdelatrisu/opsu/audio/MusicController.java
+index ae79854a..5f67efee 100644
+--- a/src/itdelatrisu/opsu/audio/MusicController.java
++++ b/src/itdelatrisu/opsu/audio/MusicController.java
+@@ -327,7 +327,7 @@ public class MusicController {
+ 		if (trackExists()) {
+ 			pauseTime = 0f;
+ 			player.resume();
+-			player.setVolume(1.0f);
++			setVolume(Options.getMusicVolume() * Options.getMasterVolume());
+ 		}
+ 	}
+ 

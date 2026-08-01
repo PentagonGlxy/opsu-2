@@ -15,8 +15,8 @@ android {
         // allow this to be raised in a later release.
         targetSdk = 28
 
-        versionCode = 3
-        versionName = "0.17.0-alpha1"
+        versionCode = 5
+        versionName = "1.0.0"
         multiDexEnabled = true
 
         ndk {
@@ -62,7 +62,6 @@ android {
     buildTypes {
         debug {
             applicationIdSuffix = ".revival"
-            versionNameSuffix = "-debug"
         }
         release {
             minifyEnabled = false

@@ -1,0 +1,409 @@
+diff --git a/src/fluddokt/ex/ProfilePicturePicker.java b/src/fluddokt/ex/ProfilePicturePicker.java
+new file mode 100644
+index 00000000..246de938
+--- /dev/null
++++ b/src/fluddokt/ex/ProfilePicturePicker.java
+@@ -0,0 +1,49 @@
++package fluddokt.ex;
++
++/**
++ * Platform bridge for selecting a local profile picture.
++ */
++public class ProfilePicturePicker {
++	public static ProfilePicturePicker info = new ProfilePicturePicker();
++
++	private String updatedUser;
++	private String error;
++
++	/** Returns whether the current platform provides a native image picker. */
++	public boolean isAvailable() {
++		return false;
++	}
++
++	/**
++	 * Opens the platform image picker.
++	 * @param userName user receiving the profile picture
++	 * @param destinationPath canonical local destination managed by the core
++	 */
++	public void chooseProfilePicture(String userName, String destinationPath) {
++	}
++
++	/** Returns and clears the most recently updated user name. */
++	public synchronized String consumeUpdatedUser() {
++		String result = updatedUser;
++		updatedUser = null;
++		return result;
++	}
++
++	/** Returns and clears the most recent picker error. */
++	public synchronized String consumeError() {
++		String result = error;
++		error = null;
++		return result;
++	}
++
++	/** Notifies the shared core that a profile picture was saved. */
++	protected synchronized void notifyProfilePictureSaved(String userName) {
++		updatedUser = userName;
++		error = null;
++	}
++
++	/** Notifies the shared core that a profile picture could not be saved. */
++	protected synchronized void notifyProfilePictureError(String message) {
++		error = message;
++	}
++}
+diff --git a/src/itdelatrisu/opsu/user/UserButton.java b/src/itdelatrisu/opsu/user/UserButton.java
+index a46ef843..955003b7 100644
+--- a/src/itdelatrisu/opsu/user/UserButton.java
++++ b/src/itdelatrisu/opsu/user/UserButton.java
+@@ -65,6 +65,9 @@ public class UserButton {
+ 	/** The user. */
+ 	private User user;
+ 
++	/** Optional profile picture loaded from local storage. */
++	private Image profilePicture;
++
+ 	/** Placeholder text to display if {@link #user} is null. */
+ 	private String placeholderText;
+ 
+@@ -128,6 +131,12 @@ public class UserButton {
+ 	public void setUser(User user) {
+ 		this.user = user;
+ 		Fonts.loadGlyphs(Fonts.MEDIUM, user.getName());
++		refreshProfilePicture();
++	}
++
++	/** Reloads this button's local profile picture. */
++	public void refreshProfilePicture() {
++		profilePicture = UserProfilePictures.getImage(user);
+ 	}
+ 
+ 	/** Returns the user. */
+@@ -193,9 +202,9 @@ public class UserButton {
+ 
+ 		// icon
+ 		int iconSize = buttonHeight - padding * 4;
+-		Image img = getIconImage(user.getIconId());
++		Image img = (profilePicture != null) ? profilePicture : getIconImage(user.getIconId());
+ 		img.setAlpha(alpha);
+-		img.draw(cx + padding, cy + padding);
++		img.draw(cx + padding, cy + padding, iconSize, iconSize);
+ 
+ 		// text
+ 		int textX = cx + iconSize + padding * 3;
+diff --git a/src/itdelatrisu/opsu/user/UserList.java b/src/itdelatrisu/opsu/user/UserList.java
+index 0d84aea1..24f95e3e 100644
+--- a/src/itdelatrisu/opsu/user/UserList.java
++++ b/src/itdelatrisu/opsu/user/UserList.java
+@@ -139,6 +139,7 @@ public class UserList {
+ 			return false;
+ 
+ 		ScoreDB.deleteUser(name);
++		UserProfilePictures.delete(name);
+ 		users.remove(name.toLowerCase());
+ 		return true;
+ 	}
+diff --git a/src/itdelatrisu/opsu/user/UserProfilePictures.java b/src/itdelatrisu/opsu/user/UserProfilePictures.java
+new file mode 100644
+index 00000000..75465cb5
+--- /dev/null
++++ b/src/itdelatrisu/opsu/user/UserProfilePictures.java
+@@ -0,0 +1,128 @@
++/*
++ * opsu! - an open-source osu! client
++ * Copyright (C) 2014-2017 Jeffrey Han
++ *
++ * opsu! is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ */
++
++package itdelatrisu.opsu.user;
++
++import fluddokt.opsu.fake.File;
++import fluddokt.opsu.fake.Image;
++import fluddokt.opsu.fake.SlickException;
++
++import itdelatrisu.opsu.options.Options;
++
++import java.util.HashMap;
++import java.util.Locale;
++import java.util.Map;
++
++/**
++ * Loads and caches per-user profile pictures stored entirely on the device.
++ */
++public final class UserProfilePictures {
++	/** User-visible directory containing local profile pictures. */
++	private static final File DIRECTORY = new File(Options.DATA_DIR, "profilepictures/");
++
++	/** Loaded profile pictures, keyed by case-insensitive user name. */
++	private static final Map<String, Image> images = new HashMap<String, Image>();
++
++	private UserProfilePictures() {}
++
++	/** Returns the local profile picture for a user, or {@code null}. */
++	public static Image getImage(User user) {
++		if (user == null)
++			return null;
++
++		String key = getKey(user.getName());
++		if (images.containsKey(key))
++			return images.get(key);
++
++		File file = getFile(user.getName());
++		if (!file.isFile()) {
++			// Cache the absence too: menu user buttons are refreshed every frame.
++			images.put(key, null);
++			return null;
++		}
++
++		try {
++			Image image = new Image(file.getAbsolutePath());
++			images.put(key, image);
++			return image;
++		} catch (SlickException e) {
++			return null;
++		}
++	}
++
++	/** Returns whether a user has a local profile picture. */
++	public static boolean hasImage(String userName) {
++		return getFile(userName).isFile();
++	}
++
++	/** Returns the canonical destination used by the platform image picker. */
++	public static String getDestinationPath(String userName) {
++		ensureDirectory();
++		return getFile(userName).getAbsolutePath();
++	}
++
++	/** Invalidates a cached image after the platform replaces its local file. */
++	public static void invalidate(String userName) {
++		Image image = images.remove(getKey(userName));
++		if (image != null) {
++			try {
++				image.destroy();
++			} catch (SlickException ignored) {
++			}
++		}
++	}
++
++	/** Deletes a user's local profile picture and releases its texture. */
++	public static void delete(String userName) {
++		invalidate(userName);
++		File file = getFile(userName);
++		if (file.isFile())
++			file.delete();
++	}
++
++	/** Returns the user-visible local profile-picture directory. */
++	public static String getDirectoryPath() {
++		ensureDirectory();
++		return DIRECTORY.getAbsolutePath();
++	}
++
++	private static File getFile(String userName) {
++		return new File(DIRECTORY, getFileName(userName));
++	}
++
++	private static void ensureDirectory() {
++		if (!DIRECTORY.isDirectory())
++			DIRECTORY.mkdir();
++	}
++
++	private static String getKey(String userName) {
++		return userName.toLowerCase(Locale.ROOT);
++	}
++
++	/**
++	 * Produces a readable, traversal-safe file name.  The hash suffix prevents
++	 * collisions between names whose punctuation normalizes to underscores.
++	 */
++	private static String getFileName(String userName) {
++		String lowerName = getKey(userName);
++		StringBuilder safeName = new StringBuilder();
++		for (int i = 0; i < lowerName.length(); i++) {
++			char c = lowerName.charAt(i);
++			if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
++				c == '-' || c == '_')
++				safeName.append(c);
++			else
++				safeName.append('_');
++		}
++		if (safeName.length() == 0)
++			safeName.append("user");
++		return safeName.toString() + "-" + Integer.toHexString(lowerName.hashCode()) + ".png";
++	}
++}
+diff --git a/src/itdelatrisu/opsu/user/UserSelectOverlay.java b/src/itdelatrisu/opsu/user/UserSelectOverlay.java
+index 70d92a67..2313c2ad 100644
+--- a/src/itdelatrisu/opsu/user/UserSelectOverlay.java
++++ b/src/itdelatrisu/opsu/user/UserSelectOverlay.java
+@@ -20,6 +20,8 @@ package itdelatrisu.opsu.user;
+ import fluddokt.opsu.fake.*;
+ import fluddokt.opsu.fake.gui.*;
+ 
++import fluddokt.ex.ProfilePicturePicker;
++
+ import itdelatrisu.opsu.audio.SoundController;
+ import itdelatrisu.opsu.audio.SoundEffect;
+ import itdelatrisu.opsu.options.Options;
+@@ -122,6 +124,9 @@ public class UserSelectOverlay extends AbstractComponent {
+ 	/** Delete user button. */
+ 	private UserButton deleteUserButton;
+ 
++	/** Choose a local profile picture button. */
++	private UserButton profilePictureButton;
++
+ 	/** States. */
+ 	private enum State { USER_SELECT, CREATE_USER, EDIT_USER }
+ 
+@@ -208,6 +213,14 @@ public class UserSelectOverlay extends AbstractComponent {
+ 		);
+ 		deleteUserButton.setHoverAnimationBase(0.5f);
+ 
++		// local profile picture
++		profilePictureButton = new UserButton(
++			(int) (this.x + usersStartX),
++			(int) (this.y + usersStartY + (UserButton.getHeight() + usersPaddingY) * 2),
++			Colors.BLUE_BUTTON
++		);
++		profilePictureButton.setPlaceholderText("Choose Local Picture");
++
+ 		// kinetic scrolling
+ 		this.scrolling = new KineticScrolling();
+ 		scrolling.setAllowOverScroll(true);
+@@ -392,9 +405,12 @@ public class UserSelectOverlay extends AbstractComponent {
+ 		// delete button
+ 		deleteUserButton.draw(g, alpha);
+ 
++		// local profile picture button
++		profilePictureButton.draw(g, alpha);
++
+ 		// user icons
+-		int cy = (int) (y + usersStartY + (UserButton.getHeight() + usersPaddingY) * 2);
+-		renderUserIcons(g, editUserButton.getUser().getIconId(), "Change Icon", cy, alpha);
++		int cy = (int) (y + usersStartY + (UserButton.getHeight() + usersPaddingY) * 3);
++		renderUserIcons(g, editUserButton.getUser().getIconId(), "Built-in Icons (tap to reset picture)", cy, alpha);
+ 	}
+ 
+ 	/** Renders the user icons. */
+@@ -439,6 +455,27 @@ public class UserSelectOverlay extends AbstractComponent {
+ 		if (!active)
+ 			return;
+ 
++		String updatedUser = ProfilePicturePicker.info.consumeUpdatedUser();
++		if (updatedUser != null) {
++			UserProfilePictures.invalidate(updatedUser);
++			for (UserButton button : userButtons) {
++				User user = button.getUser();
++				if (user != null && user.getName().equalsIgnoreCase(updatedUser))
++					button.refreshProfilePicture();
++			}
++			if (editUserButton.getUser() != null &&
++					editUserButton.getUser().getName().equalsIgnoreCase(updatedUser)) {
++				editUserButton.refreshProfilePicture();
++				profilePictureButton.setPlaceholderText("Replace Local Picture");
++			}
++			UI.getNotificationManager().sendNotification(
++				"Profile picture saved to local storage.", Colors.GREEN);
++		}
++
++		String pickerError = ProfilePicturePicker.info.consumeError();
++		if (pickerError != null)
++			UI.getNotificationManager().sendBarNotification(pickerError);
++
+ 		scrolling.update(delta);
+ 		stateChangeProgress.update(delta);
+ 		int mouseX = input.getMouseX(), mouseY = input.getMouseY();
+@@ -456,6 +493,7 @@ public class UserSelectOverlay extends AbstractComponent {
+ 		}
+ 		if (state == State.EDIT_USER) {
+ 			deleteUserButton.hoverUpdate(delta, deleteUserButton.contains(mouseX, mouseY));
++			profilePictureButton.hoverUpdate(delta, profilePictureButton.contains(mouseX, mouseY));
+ 			for (int i = 0; i < userIcons.length; i++)
+ 				userIcons[i].hoverUpdate(delta, mouseX, mouseY);
+ 		}
+@@ -527,16 +565,13 @@ public class UserSelectOverlay extends AbstractComponent {
+ 					prepareUserCreate();
+ 				} else {
+ 					String name = user.getName();
+-					if (button == Input.MOUSE_RIGHT_BUTTON) {
+-						// right click: edit user
+-						if (name.equals(UserList.DEFAULT_USER_NAME)) {
+-							UI.getNotificationManager().sendBarNotification("This user can't be edited.");
+-						} else {
+-							state = State.EDIT_USER;
+-							prevState = State.USER_SELECT;
+-							stateChangeProgress.setTime(0);
+-							prepareUserEdit(selectedButton.getUser());
+-						}
++					if (button == Input.MOUSE_RIGHT_BUTTON ||
++							name.equals(UserList.get().getCurrentUser().getName())) {
++						// Right-click any user, or tap the current user, to edit.
++						state = State.EDIT_USER;
++						prevState = State.USER_SELECT;
++						stateChangeProgress.setTime(0);
++						prepareUserEdit(selectedButton.getUser());
+ 					} else {
+ 						// left click: select user
+ 						if (!name.equals(UserList.get().getCurrentUser().getName())) {
+@@ -564,10 +599,24 @@ public class UserSelectOverlay extends AbstractComponent {
+ 				}
+ 			}
+ 		} else if (state == State.EDIT_USER) {
+-			if (deleteUserButton.contains(x, y)) {
++			if (profilePictureButton.contains(x, y)) {
++				SoundController.playSound(SoundEffect.MENUCLICK);
++				User user = editUserButton.getUser();
++				if (ProfilePicturePicker.info.isAvailable()) {
++					ProfilePicturePicker.info.chooseProfilePicture(
++						user.getName(),
++						UserProfilePictures.getDestinationPath(user.getName())
++					);
++				} else {
++					UI.getNotificationManager().sendBarNotification(
++						"Add a square PNG to " + UserProfilePictures.getDirectoryPath());
++				}
++			} else if (deleteUserButton.contains(x, y)) {
+ 				SoundController.playSound(SoundEffect.MENUCLICK);
+ 				String name = editUserButton.getUser().getName();
+-				if (name.equals(UserList.get().getCurrentUser().getName()))
++				if (name.equals(UserList.DEFAULT_USER_NAME))
++					UI.getNotificationManager().sendBarNotification("You can't delete the Guest user!");
++				else if (name.equals(UserList.get().getCurrentUser().getName()))
+ 					UI.getNotificationManager().sendBarNotification("You can't delete the current user!");
+ 				else {
+ 					String confirmationText = "Confirm User Deletion";
+@@ -589,10 +638,15 @@ public class UserSelectOverlay extends AbstractComponent {
+ 				for (int i = 0; i < userIcons.length; i++) {
+ 					if (userIcons[i].contains(x, y)) {
+ 						User user = editUserButton.getUser();
+-						if (i != user.getIconId()) {
++						boolean hadProfilePicture = UserProfilePictures.hasImage(user.getName());
++						if (i != user.getIconId() || hadProfilePicture) {
+ 							SoundController.playSound(SoundEffect.MENUCLICK);
++							if (hadProfilePicture)
++								UserProfilePictures.delete(user.getName());
+ 							user.setIconId(i);
+ 							ScoreDB.updateUser(user);
++							editUserButton.refreshProfilePicture();
++							profilePictureButton.setPlaceholderText("Choose Local Picture");
+ 						}
+ 						break;
+ 					}
+@@ -785,6 +839,10 @@ public class UserSelectOverlay extends AbstractComponent {
+ 		editUserButton.resetHover();
+ 		deleteUserButton.setPlaceholderText("Delete User");
+ 		deleteUserButton.resetHover();
++		profilePictureButton.setPlaceholderText(
++			UserProfilePictures.hasImage(user.getName()) ?
++			"Replace Local Picture" : "Choose Local Picture");
++		profilePictureButton.resetHover();
+ 
+ 		prepareUserIcons();
+ 	}
+

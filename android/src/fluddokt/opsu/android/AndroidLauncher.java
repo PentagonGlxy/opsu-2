@@ -1,6 +1,7 @@
 package fluddokt.opsu.android;
 
 import android.Manifest;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
@@ -18,6 +19,7 @@ import com.badlogic.gdx.files.FileHandle;
 
 import fluddokt.ex.DeviceInfo;
 import fluddokt.ex.DevicePerformance;
+import fluddokt.ex.ProfilePicturePicker;
 import fluddokt.opsu.fake.File;
 import fluddokt.opsu.fake.GameOpsu;
 
@@ -26,6 +28,7 @@ public class AndroidLauncher extends AndroidApplication {
 	private static final float BATTERY_SAVER_REFRESH_RATE = 60f;
 
 	private boolean gameInitialized;
+	private AndroidProfilePicturePicker profilePicturePicker;
 	private volatile boolean batterySaverEnabled = true;
 	private volatile boolean gameplayActive;
 	private volatile boolean windowHasFocus = true;
@@ -78,6 +81,8 @@ public class AndroidLauncher extends AndroidApplication {
 				applyPerformanceProfile();
 			}
 		};
+		profilePicturePicker = new AndroidProfilePicturePicker(this);
+		ProfilePicturePicker.info = profilePicturePicker;
 
 		if (hasLegacyStoragePermission()) {
 			initializeGame();
@@ -101,6 +106,13 @@ public class AndroidLauncher extends AndroidApplication {
 		super.onRequestPermissionsResult(requestCode, permissions, grantResults);
 		if (requestCode == STORAGE_PERMISSION_REQUEST)
 			initializeGame();
+	}
+
+	@Override
+	protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+		if (profilePicturePicker == null ||
+				!profilePicturePicker.handleActivityResult(requestCode, resultCode, data))
+			super.onActivityResult(requestCode, resultCode, data);
 	}
 
 	private boolean hasLegacyStoragePermission() {

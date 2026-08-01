@@ -19,6 +19,7 @@ import com.badlogic.gdx.files.FileHandle;
 
 import fluddokt.ex.DeviceInfo;
 import fluddokt.ex.DevicePerformance;
+import fluddokt.ex.MenuThemePicker;
 import fluddokt.ex.ProfilePicturePicker;
 import fluddokt.opsu.fake.File;
 import fluddokt.opsu.fake.GameOpsu;
@@ -29,6 +30,7 @@ public class AndroidLauncher extends AndroidApplication {
 
 	private boolean gameInitialized;
 	private AndroidProfilePicturePicker profilePicturePicker;
+	private AndroidMenuThemePicker menuThemePicker;
 	private volatile boolean batterySaverEnabled = true;
 	private volatile boolean gameplayActive;
 	private volatile boolean windowHasFocus = true;
@@ -83,6 +85,8 @@ public class AndroidLauncher extends AndroidApplication {
 		};
 		profilePicturePicker = new AndroidProfilePicturePicker(this);
 		ProfilePicturePicker.info = profilePicturePicker;
+		menuThemePicker = new AndroidMenuThemePicker(this);
+		MenuThemePicker.info = menuThemePicker;
 
 		if (hasLegacyStoragePermission()) {
 			initializeGame();
@@ -110,9 +114,13 @@ public class AndroidLauncher extends AndroidApplication {
 
 	@Override
 	protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-		if (profilePicturePicker == null ||
-				!profilePicturePicker.handleActivityResult(requestCode, resultCode, data))
-			super.onActivityResult(requestCode, resultCode, data);
+		if (profilePicturePicker != null &&
+			profilePicturePicker.handleActivityResult(requestCode, resultCode, data))
+			return;
+		if (menuThemePicker != null &&
+			menuThemePicker.handleActivityResult(requestCode, resultCode, data))
+			return;
+		super.onActivityResult(requestCode, resultCode, data);
 	}
 
 	private boolean hasLegacyStoragePermission() {

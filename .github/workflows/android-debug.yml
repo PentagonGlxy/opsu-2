@@ -36,7 +36,7 @@ jobs:
         run: sdkmanager "platforms;android-36" "build-tools;35.0.0"
 
       - name: Build debug APK
-        run: ./gradlew :android:assembleDebug --stacktrace
+        run: ./gradlew applyCorePatches :android:assembleDebug --stacktrace
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4

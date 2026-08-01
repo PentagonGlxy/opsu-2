@@ -1,0 +1,711 @@
+diff --git a/src/fluddokt/ex/MenuThemePicker.java b/src/fluddokt/ex/MenuThemePicker.java
+new file mode 100644
+index 00000000..ca304f01
+--- /dev/null
++++ b/src/fluddokt/ex/MenuThemePicker.java
+@@ -0,0 +1,101 @@
++package fluddokt.ex;
++
++/**
++ * Platform bridge for importing a custom main-menu theme.
++ *
++ * <p>Android supplies a native document picker while the shared core polls for
++ * completed selections.  Keeping the picker behind this bridge avoids Android
++ * dependencies in the core module.</p>
++ */
++public class MenuThemePicker {
++	public static MenuThemePicker info = new MenuThemePicker();
++
++	/** Immutable result returned by a platform theme importer. */
++	public static final class Selection {
++		public final String path;
++		public final String title;
++		public final String artist;
++		public final int duration;
++		public final String timingPoint;
++
++		public Selection(
++			String path,
++			String title,
++			String artist,
++			int duration,
++			String timingPoint
++		) {
++			this.path = path;
++			this.title = title;
++			this.artist = artist;
++			this.duration = duration;
++			this.timingPoint = timingPoint;
++		}
++	}
++
++	private Selection selection;
++	private String error;
++	private boolean resetRequested;
++
++	/** Returns whether the current platform provides a native theme picker. */
++	public boolean isAvailable() {
++		return false;
++	}
++
++	/**
++	 * Opens the platform theme picker.
++	 *
++	 * @param currentTitle current custom title, if any
++	 * @param currentArtist current custom artist, if any
++	 * @param destinationDirectory core-managed theme directory
++	 */
++	public void chooseMenuTheme(
++		String currentTitle,
++		String currentArtist,
++		String destinationDirectory
++	) {
++	}
++
++	/** Requests that the core return to the built-in menu theme. */
++	public synchronized void requestReset() {
++		resetRequested = true;
++	}
++
++	/** Returns and clears the most recently imported theme. */
++	public synchronized Selection consumeSelection() {
++		Selection result = selection;
++		selection = null;
++		return result;
++	}
++
++	/** Returns and clears the most recent importer error. */
++	public synchronized String consumeError() {
++		String result = error;
++		error = null;
++		return result;
++	}
++
++	/** Returns and clears a pending reset request. */
++	public synchronized boolean consumeResetRequested() {
++		boolean result = resetRequested;
++		resetRequested = false;
++		return result;
++	}
++
++	/** Notifies the shared core that a theme was installed. */
++	protected synchronized void notifyThemeSelected(
++		String path,
++		String title,
++		String artist,
++		int duration,
++		String timingPoint
++	) {
++		selection = new Selection(path, title, artist, duration, timingPoint);
++		error = null;
++	}
++
++	/** Notifies the shared core that a theme could not be imported. */
++	protected synchronized void notifyThemeError(String message) {
++		error = message;
++	}
++}
+diff --git a/src/itdelatrisu/opsu/options/OptionGroup.java b/src/itdelatrisu/opsu/options/OptionGroup.java
+index c338514e..20fd4b08 100644
+--- a/src/itdelatrisu/opsu/options/OptionGroup.java
++++ b/src/itdelatrisu/opsu/options/OptionGroup.java
+@@ -78,6 +78,11 @@ public class OptionGroup {
+ 			GameOption.SEASONAL_BACKGROUNDS,
+ 			GameOption.PARALLAX,
+ 			GameOption.ENABLE_THEME_SONG,
++			GameOption.CUSTOM_MENU_THEME,
++			GameOption.RESET_MENU_THEME,
++			GameOption.MENU_TIPS,
++			GameOption.MENU_VISUALIZER,
++			GameOption.MENU_PARTICLES,
+ 		}),
+ 		new OptionGroup("Gameplay", GameImage.MENU_NAV_GAMEPLAY),
+ 		new OptionGroup("GENERAL", new GameOption[] {
+diff --git a/src/itdelatrisu/opsu/options/Options.java b/src/itdelatrisu/opsu/options/Options.java
+index 0ba0a079..8fe18839 100644
+--- a/src/itdelatrisu/opsu/options/Options.java
++++ b/src/itdelatrisu/opsu/options/Options.java
+@@ -19,6 +19,7 @@
+ package itdelatrisu.opsu.options;
+ 
+ import fluddokt.ex.DevicePerformance;
++import fluddokt.ex.MenuThemePicker;
+ import fluddokt.opsu.fake.*;
+ 
+ import itdelatrisu.opsu.Container;
+@@ -113,6 +114,9 @@ public class Options {
+ 	private static final File SEASONAL_BACKGROUND_DIR =
+ 			new File(DATA_DIR, "seasonalbackgrounds/");
+ 
++	/** Directory containing the active user-imported main-menu theme. */
++	private static final File MENU_THEME_DIR = new File(DATA_DIR, "menuthemes/");
++
+ 	/** Cached beatmap database name. */
+ 	public static final File BEATMAP_DB = File.local("opsu.db");
+ 	public static final File O_BEATMAP_DB = new File(DATA_DIR, ".opsu.db");
+@@ -167,6 +171,13 @@ public class Options {
+ 	/** The theme song timing point string (for computing beats to pulse the logo) . */
+ 	private static String themeTimingPoint = "1120,545.454545454545,4,1,0,100,0,0";
+ 
++	/** Persistent metadata for a user-imported main-menu theme. */
++	private static String customThemeFilename = "";
++	private static String customThemeTitle = "";
++	private static String customThemeArtist = "";
++	private static int customThemeDuration;
++	private static String customThemeTimingPoint = "0,500,4,1,0,100,1,0";
++
+ 	/**
+ 	 * Returns whether the XDG flag in the manifest (if any) is set to "true".
+ 	 * @return true if XDG directories are enabled, false otherwise
+@@ -341,6 +352,33 @@ public class Options {
+ 				}
+ 			}
+ 		},
++		CUSTOM_THEME_FILENAME ("CustomMenuThemeFile") {
++			@Override public String write() { return customThemeFilename; }
++			@Override public void read(String s) { customThemeFilename = sanitizeConfigValue(s); }
++		},
++		CUSTOM_THEME_TITLE ("CustomMenuThemeTitle") {
++			@Override public String write() { return customThemeTitle; }
++			@Override public void read(String s) { customThemeTitle = sanitizeMetadata(s, "Custom Theme"); }
++		},
++		CUSTOM_THEME_ARTIST ("CustomMenuThemeArtist") {
++			@Override public String write() { return customThemeArtist; }
++			@Override public void read(String s) { customThemeArtist = sanitizeMetadata(s, "Unknown Artist"); }
++		},
++		CUSTOM_THEME_DURATION ("CustomMenuThemeDuration") {
++			@Override public String write() { return Integer.toString(customThemeDuration); }
++			@Override public void read(String s) { customThemeDuration = Math.max(0, Integer.parseInt(s)); }
++		},
++		CUSTOM_THEME_TIMINGPOINT ("CustomMenuThemeTiming") {
++			@Override public String write() { return customThemeTimingPoint; }
++			@Override public void read(String s) {
++				try {
++					new TimingPoint(s);
++					customThemeTimingPoint = sanitizeConfigValue(s);
++				} catch (Exception e) {
++					Log.warn(String.format("The custom theme timing point [%s] is malformed.", s));
++				}
++			}
++		},
+ 
+ 		// in-game options
+ 		SCREEN_RESOLUTION ("Resolution", "ScreenResolution", "") {
+@@ -560,6 +598,35 @@ public class Options {
+ 		},
+ 		DYNAMIC_BACKGROUND ("Dynamic backgrounds", "DynamicBackground", "The current beatmap background will be used as the main menu background.", true),
+ 		SEASONAL_BACKGROUNDS ("Seasonal backgrounds", "SeasonalBackgrounds", "Use images from Internal storage/opsu/seasonalbackgrounds on Android\nas rotating menu backgrounds, with no image-count limit.", false),
++		MENU_TIPS ("Menu tips", "MenuTips", "Show rotating osu!stable-style gameplay tips along the bottom of the main menu.", true),
++		MENU_VISUALIZER ("Menu music visualizer", "MenuVisualizer", "Show the beat-reactive spectrum around the main-menu logo.\nDisable this on slower devices to reduce GPU work.", true),
++		MENU_PARTICLES ("Menu particles", "MenuParticles", "Show the main-menu star fountain.\nDisable this on slower devices to reduce CPU and GPU work.", true),
++		CUSTOM_MENU_THEME ("Custom menu theme", "CustomMenuThemePicker", "Import an MP3, OGG, or .osz as the main-menu song.\n.osz imports read Artist, Title, audio, and timing from the embedded .osu file.") {
++			@Override
++			public String getValueString() {
++				return customThemeFilename.isEmpty() ? "Choose file" : customThemeTitle;
++			}
++
++			@Override
++			public void click(GameContainer container) {
++				if (!MenuThemePicker.info.isAvailable()) {
++					UI.getNotificationManager().sendBarNotification("A native menu-theme picker is not available on this platform.");
++					return;
++				}
++				MenuThemePicker.info.chooseMenuTheme(
++					customThemeTitle,
++					customThemeArtist,
++					getMenuThemeDir().getAbsolutePath()
++				);
++			}
++		},
++		RESET_MENU_THEME ("Reset menu theme", "ResetMenuTheme", "Return to the built-in menu song while keeping the imported file available for replacement.") {
++			@Override public String getValueString() { return customThemeFilename.isEmpty() ? "Default" : "Reset"; }
++			@Override public void click(GameContainer container) {
++				if (!customThemeFilename.isEmpty())
++					MenuThemePicker.info.requestReset();
++			}
++		},
+ 		LOAD_VERBOSE ("Detailed loading progress", "LoadVerbose", "Display more verbose loading progress in the splash screen.", false),
+ 		MASTER_VOLUME ("Master", "VolumeUniversal", "Global volume level.", 35, 0, 100) {
+ 			@Override
+@@ -1272,6 +1339,15 @@ public class Options {
+ 	 */
+ 	public static boolean areSeasonalBackgroundsEnabled() { return GameOption.SEASONAL_BACKGROUNDS.getBooleanValue(); }
+ 
++	/** Returns whether rotating stable-style tips are shown on the main menu. */
++	public static boolean areMenuTipsEnabled() { return GameOption.MENU_TIPS.getBooleanValue(); }
++
++	/** Returns whether the main-menu beat visualizer is enabled. */
++	public static boolean isMenuVisualizerEnabled() { return GameOption.MENU_VISUALIZER.getBooleanValue(); }
++
++	/** Returns whether main-menu particles are enabled. */
++	public static boolean areMenuParticlesEnabled() { return GameOption.MENU_PARTICLES.getBooleanValue(); }
++
+ 	/**
+ 	 * Returns whether or not to show perfect hit result bursts.
+ 	 * @return true if enabled
+@@ -1621,6 +1697,88 @@ public class Options {
+ 		return SEASONAL_BACKGROUND_DIR;
+ 	}
+ 
++	/**
++	 * Returns the directory containing the active imported menu theme.
++	 * On Android this resolves to Internal storage/opsu/menuthemes.
++	 */
++	public static File getMenuThemeDir() {
++		if (!MENU_THEME_DIR.isDirectory() && !MENU_THEME_DIR.mkdir())
++			ErrorHandler.error(String.format("Failed to create menu theme directory at '%s'.", MENU_THEME_DIR.getAbsolutePath()), null, false);
++		return MENU_THEME_DIR;
++	}
++
++	/** Returns whether a valid custom menu theme is configured. */
++	public static boolean hasCustomMenuTheme() {
++		if (customThemeFilename.isEmpty())
++			return false;
++		String lower = customThemeFilename.toLowerCase(Locale.US);
++		if (!lower.endsWith(".mp3") && !lower.endsWith(".ogg"))
++			return false;
++		return new File(getMenuThemeDir(), customThemeFilename).isFile();
++	}
++
++	public static String getCustomMenuThemeTitle() { return customThemeTitle; }
++	public static String getCustomMenuThemeArtist() { return customThemeArtist; }
++
++	/**
++	 * Activates a platform-imported custom menu theme.
++	 * @return true if the managed audio file and supplied metadata were valid
++	 */
++	public static boolean setCustomMenuTheme(
++		String path,
++		String title,
++		String artist,
++		int duration,
++		String timingPoint
++	) {
++		if (path == null)
++			return false;
++
++		File imported = new File(path);
++		String filename = imported.getName();
++		String lower = filename.toLowerCase(Locale.US);
++		if ((!lower.endsWith(".mp3") && !lower.endsWith(".ogg")) ||
++			!filename.startsWith("custom-menu-theme.") || !imported.isFile())
++			return false;
++
++		File managed = new File(getMenuThemeDir(), filename);
++		if (!managed.isFile())
++			return false;
++
++		String checkedTimingPoint = sanitizeConfigValue(timingPoint);
++		try {
++			new TimingPoint(checkedTimingPoint);
++		} catch (Exception e) {
++			checkedTimingPoint = "0,500,4,1,0,100,1,0";
++		}
++
++		customThemeFilename = filename;
++		customThemeTitle = sanitizeMetadata(title, "Custom Theme");
++		customThemeArtist = sanitizeMetadata(artist, "Unknown Artist");
++		customThemeDuration = (duration > 0) ? duration : 180000;
++		customThemeTimingPoint = checkedTimingPoint;
++		GameOption.ENABLE_THEME_SONG.setValue(true);
++		return true;
++	}
++
++	/** Returns to the built-in theme without deleting the managed import. */
++	public static void resetCustomMenuTheme() {
++		customThemeFilename = "";
++		customThemeTitle = "";
++		customThemeArtist = "";
++		customThemeDuration = 0;
++		customThemeTimingPoint = "0,500,4,1,0,100,1,0";
++	}
++
++	private static String sanitizeConfigValue(String value) {
++		return (value == null) ? "" : value.replace('\n', ' ').replace('\r', ' ').trim();
++	}
++
++	private static String sanitizeMetadata(String value, String fallback) {
++		String sanitized = sanitizeConfigValue(value);
++		return sanitized.isEmpty() ? fallback : sanitized;
++	}
++
+ 	/**
+ 	 * Returns the screenshot directory.
+ 	 * If invalid, this will return a "Screenshot" directory.
+@@ -1745,22 +1903,31 @@ public class Options {
+ 	 * @return the theme song beatmap, or {@code null} if the theme string is malformed
+ 	 */
+ 	public static Beatmap getThemeBeatmap() {
+-		String[] tokens = themeString.split(",");
+-		if (tokens.length != 4)
+-			return null;
+-
+ 		Beatmap beatmap = new Beatmap(null);
+-		beatmap.audioFilename = new File(tokens[0]);
+-		beatmap.title = tokens[1];
+-		beatmap.artist = tokens[2];
+-		try {
+-			beatmap.endTime = Integer.parseInt(tokens[3]);
+-		} catch (NumberFormatException e) {
+-			return null;
++		String timingPoint;
++		if (hasCustomMenuTheme()) {
++			beatmap.audioFilename = new File(getMenuThemeDir(), customThemeFilename);
++			beatmap.title = sanitizeMetadata(customThemeTitle, "Custom Theme");
++			beatmap.artist = sanitizeMetadata(customThemeArtist, "Unknown Artist");
++			beatmap.endTime = (customThemeDuration > 0) ? customThemeDuration : 180000;
++			timingPoint = customThemeTimingPoint;
++		} else {
++			String[] tokens = themeString.split(",", -1);
++			if (tokens.length != 4)
++				return null;
++			beatmap.audioFilename = new File(tokens[0]);
++			beatmap.title = tokens[1];
++			beatmap.artist = tokens[2];
++			try {
++				beatmap.endTime = Integer.parseInt(tokens[3]);
++			} catch (NumberFormatException e) {
++				return null;
++			}
++			timingPoint = themeTimingPoint;
+ 		}
+ 		try {
+ 			beatmap.timingPoints = new ArrayList<>(1);
+-			beatmap.timingPoints.add(new TimingPoint(themeTimingPoint));
++			beatmap.timingPoints.add(new TimingPoint(timingPoint));
+ 		} catch (Exception e) {
+ 			return null;
+ 		}
+diff --git a/src/itdelatrisu/opsu/options/OptionsOverlay.java b/src/itdelatrisu/opsu/options/OptionsOverlay.java
+index 199745d4..27befd4b 100644
+--- a/src/itdelatrisu/opsu/options/OptionsOverlay.java
++++ b/src/itdelatrisu/opsu/options/OptionsOverlay.java
+@@ -1240,6 +1240,9 @@ public class OptionsOverlay extends AbstractComponent {
+ 			} else if (hoverOption == GameOption.KEY_RIGHT) {
+ 				SoundController.playSound(SoundEffect.MENUCLICK);
+ 				keyEntryRight = true;
++			} else {
++				SoundController.playSound(SoundEffect.MENUCLICK);
++				hoverOption.click(container);
+ 			}
+ 		}
+ 
+diff --git a/src/itdelatrisu/opsu/states/MainMenu.java b/src/itdelatrisu/opsu/states/MainMenu.java
+index c9a5842b..151450ae 100644
+--- a/src/itdelatrisu/opsu/states/MainMenu.java
++++ b/src/itdelatrisu/opsu/states/MainMenu.java
+@@ -18,6 +18,7 @@
+ 
+ package itdelatrisu.opsu.states;
+ 
++import fluddokt.ex.MenuThemePicker;
+ import fluddokt.opsu.fake.*;
+ import fluddokt.newdawn.slick.state.transition.*;
+ import itdelatrisu.opsu.GameImage;
+@@ -100,6 +101,17 @@ public class MainMenu extends BasicGameState {
+ 		"pick a song", "browse & download", "tune your game", "see ya next time"
+ 	};
+ 
++	/** Rotating footer tips inspired by osu!stable's main menu. */
++	private static final String[] STABLE_MENU_TIPS = {
++		"You can import beatmaps by placing .osz files in Internal storage/opsu/Import.",
++		"Adjust Universal offset if every map feels consistently early or late.",
++		"Disable menu particles or the visualizer for smoother menus on slower phones.",
++		"Custom menu themes can be imported from MP3, OGG, or .osz in Options.",
++		"Tap the music controls in the top-right corner to pause or change tracks.",
++		"Beatmap sounds and custom hitsounds can be toggled independently in Audio options."
++	};
++	private static final long MENU_TIP_INTERVAL = 9000L;
++
+ 	/** Length of the supplied voice and matching screen animations. */
+ 	private static final int WELCOME_ANIMATION_DURATION = 6400;
+ 	private static final int EXIT_ANIMATION_DURATION = 2800;
+@@ -173,6 +185,14 @@ public class MainMenu extends BasicGameState {
+ 	/** Application start time, for drawing the total running time. */
+ 	private long programStartTime;
+ 
++	/** Cached status strings to avoid formatting and date allocations every frame. */
++	private final SimpleDateFormat menuClockFormat = new SimpleDateFormat("h:mm a", Locale.getDefault());
++	private final Date menuClockDate = new Date();
++	private long nextStatusTextUpdate;
++	private String beatmapStatusText = "";
++	private String runTimeStatusText = "";
++	private String clockStatusText = "";
++
+ 	/** Indexes of previous songs. */
+ 	private Stack<Integer> previous;
+ 
+@@ -259,6 +279,7 @@ public class MainMenu extends BasicGameState {
+ 		programStartTime = System.currentTimeMillis();
+ 		previous = new Stack<Integer>();
+ 		Options.getSeasonalBackgroundDir();
++		Options.getMenuThemeDir();
+ 
+ 		int width = container.getWidth();
+ 		int height = container.getHeight();
+@@ -419,9 +440,14 @@ public class MainMenu extends BasicGameState {
+ 		else {
+ 			Image bg = GameImage.MENU_BG.getImage();
+ 			if (Options.isParallaxEnabled()) {
+-				bg = bg.getScaledCopy(GameImage.PARALLAX_SCALE);
+ 				bg.setAlpha(bgAlpha.getValue());
+-				bg.drawCentered(width / 2 + parallaxX, height / 2 + parallaxY);
++				float bgWidth = bg.getWidth() * GameImage.PARALLAX_SCALE;
++				float bgHeight = bg.getHeight() * GameImage.PARALLAX_SCALE;
++				bg.draw(
++					width / 2f + parallaxX - bgWidth / 2f,
++					height / 2f + parallaxY - bgHeight / 2f,
++					bgWidth, bgHeight, Color.white
++				);
+ 			} else {
+ 				bg.setAlpha(bgAlpha.getValue());
+ 				bg.drawCentered(width / 2, height / 2);
+@@ -434,7 +460,8 @@ public class MainMenu extends BasicGameState {
+ 		g.fillRect(0, height * 8 / 9f, width, height / 9f);
+ 
+ 		// draw star fountain
+-		starFountain.draw();
++		if (Options.areMenuParticlesEnabled())
++			starFountain.draw();
+ 
+ 		// draw the stable-style ribbons behind the logo
+ 		drawStableMenu(g, width, height);
+@@ -443,12 +470,19 @@ public class MainMenu extends BasicGameState {
+ 		Float position = MusicController.getBeatProgress();
+ 		if (position == null)  // default to 60bpm
+ 			position = System.currentTimeMillis() % 1000 / 1000f;
+-		drawStableSpectrum(g, width, height, position);
++		if (Options.isMenuVisualizerEnabled())
++			drawStableSpectrum(g, width, height, position);
+ 		float scale = 1f + position * 0.05f;
+ 		logo.draw(Color.white, scale);
+ 		float ghostScale = logo.getLastScale() / scale * 1.05f;
+-		Image ghostLogo = GameImage.MENU_LOGO.getImage().getScaledCopy(ghostScale);
+-		ghostLogo.drawCentered(logo.getX(), logo.getY(), Colors.GHOST_LOGO);
++		Image ghostLogo = GameImage.MENU_LOGO.getImage();
++		float ghostWidth = ghostLogo.getWidth() * ghostScale;
++		float ghostHeight = ghostLogo.getHeight() * ghostScale;
++		ghostLogo.draw(
++			logo.getX() - ghostWidth / 2f,
++			logo.getY() - ghostHeight / 2f,
++			ghostWidth, ghostHeight, Colors.GHOST_LOGO
++		);
+ 
+ 		// draw music info bar
+ 		if (MusicController.trackExists()) {
+@@ -524,28 +558,18 @@ public class MainMenu extends BasicGameState {
+ 		userButton.draw(g);
+ 
+ 		// draw the always-visible stable-style status text
++		updateStableStatusText();
+ 		float textAlpha = 0.9f;
+ 		float oldWhiteAlpha = Colors.WHITE_FADE.a;
+ 		Colors.WHITE_FADE.a = textAlpha;
+ 		float marginX = UserButton.getWidth() + 8, topMarginY = 4;
+-		Fonts.MEDIUM.drawString(marginX, topMarginY,
+-			String.format("You have %d beatmaps available!",
+-					BeatmapSetList.get().getMapCount()),
+-			Colors.WHITE_FADE
+-		);
++		Fonts.MEDIUM.drawString(marginX, topMarginY, beatmapStatusText, Colors.WHITE_FADE);
+ 		float lineHeight = Fonts.MEDIUM.getLineHeight() * 0.925f;
+-		Fonts.MEDIUM.drawString(marginX, topMarginY + lineHeight,
+-			String.format("%s has been running for %s.",
+-				OpsuConstants.PROJECT_NAME,
+-				Utils.getTimeString((int) (System.currentTimeMillis() - programStartTime) / 1000)),
+-			Colors.WHITE_FADE
+-		);
++		Fonts.MEDIUM.drawString(marginX, topMarginY + lineHeight, runTimeStatusText, Colors.WHITE_FADE);
+ 		lineHeight += Fonts.MEDIUM.getLineHeight() * 0.925f;
+-		Fonts.MEDIUM.drawString(marginX, topMarginY + lineHeight,
+-			String.format("It is currently %s.",
+-				new SimpleDateFormat("h:mm a").format(new Date())),
+-			Colors.WHITE_FADE
+-		);
++		Fonts.MEDIUM.drawString(marginX, topMarginY + lineHeight, clockStatusText, Colors.WHITE_FADE);
++		if (Options.areMenuTipsEnabled())
++			drawStableMenuTip(width, height);
+ 		Colors.WHITE_FADE.a = oldWhiteAlpha;
+ 
+ 		// options overlay
+@@ -577,6 +601,7 @@ public class MainMenu extends BasicGameState {
+ 				container.exit();
+ 			return;
+ 		}
++		syncMenuThemeSelection();
+ 		syncSeasonalBackgroundState();
+ 		if (MusicController.trackEnded())
+ 			nextTrack(false);  // end of track: go to next track
+@@ -617,7 +642,8 @@ public class MainMenu extends BasicGameState {
+ 		noHoverUpdate |= contains;
+ 		musicNext.hoverUpdate(delta, !noHoverUpdate && musicNext.contains(mouseX, mouseY));
+ 		musicPrevious.hoverUpdate(delta, !noHoverUpdate && musicPrevious.contains(mouseX, mouseY));
+-		starFountain.update(delta);
++		if (Options.areMenuParticlesEnabled())
++			starFountain.update(delta);
+ 		if (!userButtonFlashed) {  // flash user button once
+ 			userButton.flash();
+ 			userButtonFlashed = true;
+@@ -638,11 +664,13 @@ public class MainMenu extends BasicGameState {
+ 			bgAlpha.update(delta);
+ 
+ 		// check measure progress
+-		Float measureProgress = MusicController.getMeasureProgress(2);
+-		if (measureProgress != null) {
+-			if (measureProgress < lastMeasureProgress)
+-				starFountain.burst(true);
+-			lastMeasureProgress = measureProgress;
++		if (Options.areMenuParticlesEnabled()) {
++			Float measureProgress = MusicController.getMeasureProgress(2);
++			if (measureProgress != null) {
++				if (measureProgress < lastMeasureProgress)
++					starFountain.burst(true);
++				lastMeasureProgress = measureProgress;
++			}
+ 		}
+ 
+ 		// options overlay
+@@ -1319,6 +1347,74 @@ public class MainMenu extends BasicGameState {
+ 		musicInfoProgress.setTime(0);
+ 	}
+ 
++	/** Applies completed Android MP3/OGG/.osz imports on the render thread. */
++	private void syncMenuThemeSelection() {
++		MenuThemePicker.Selection selection = MenuThemePicker.info.consumeSelection();
++		if (selection != null) {
++			if (Options.setCustomMenuTheme(
++				selection.path,
++				selection.title,
++				selection.artist,
++				selection.duration,
++				selection.timingPoint
++			)) {
++				Options.saveOptions();
++				MusicController.reset();
++				MusicController.playThemeSong();
++				lastMeasureProgress = 0f;
++				musicInfoProgress.setTime(0);
++				UI.getNotificationManager().sendBarNotification(
++					String.format("Menu theme: %s - %s", selection.artist, selection.title)
++				);
++			} else {
++				UI.getNotificationManager().sendBarNotification("The imported menu theme could not be activated.");
++			}
++		}
++
++		if (MenuThemePicker.info.consumeResetRequested()) {
++			Options.resetCustomMenuTheme();
++			Options.saveOptions();
++			MusicController.reset();
++			MusicController.playThemeSong();
++			lastMeasureProgress = 0f;
++			musicInfoProgress.setTime(0);
++			UI.getNotificationManager().sendBarNotification("Restored the built-in menu theme.");
++		}
++
++		String pickerError = MenuThemePicker.info.consumeError();
++		if (pickerError != null)
++			UI.getNotificationManager().sendBarNotification(pickerError);
++	}
++
++	/** Refreshes status text once per second instead of allocating it every frame. */
++	private void updateStableStatusText() {
++		long now = System.currentTimeMillis();
++		if (now < nextStatusTextUpdate)
++			return;
++		nextStatusTextUpdate = now + 1000L;
++		beatmapStatusText = String.format(
++			"You have %d beatmaps available!",
++			BeatmapSetList.get().getMapCount()
++		);
++		runTimeStatusText = String.format(
++			"%s has been running for %s.",
++			OpsuConstants.PROJECT_NAME,
++			Utils.getTimeString((int) (now - programStartTime) / 1000)
++		);
++		menuClockDate.setTime(now);
++		clockStatusText = String.format("It is currently %s.", menuClockFormat.format(menuClockDate));
++	}
++
++	/** Draws one rotating stable-style footer tip without per-frame string creation. */
++	private void drawStableMenuTip(int width, int height) {
++		int index = (int) ((System.currentTimeMillis() / MENU_TIP_INTERVAL) % STABLE_MENU_TIPS.length);
++		String tip = STABLE_MENU_TIPS[index];
++		float x = Math.max(8f, (width - Fonts.DEFAULT.getWidth(tip)) / 2f);
++		float y = height * 0.91f;
++		Fonts.DEFAULT.drawString(x + 1f, y + 1f, tip, Colors.BLACK_ALPHA);
++		Fonts.DEFAULT.drawString(x, y, tip, Colors.WHITE_FADE);
++	}
++
+ 	/**
+ 	 * Applies changes to the seasonal background option without requiring a restart.
+ 	 */
+diff --git a/src/itdelatrisu/opsu/ui/MenuButton.java b/src/itdelatrisu/opsu/ui/MenuButton.java
+index 40c01a99..d374bd15 100644
+--- a/src/itdelatrisu/opsu/ui/MenuButton.java
++++ b/src/itdelatrisu/opsu/ui/MenuButton.java
+@@ -226,39 +226,31 @@ public class MenuButton {
+ 
+ 		// normal images
+ 		if (imgL == null) {
+-			float xScaleOffset = 0f, yScaleOffset = 0f;
+-			if (scaleOverride != 1f) {
+-				image = image.getScaledCopy(scaleOverride);
+-				xScaleOffset = image.getWidth() / 2f - xRadius;
+-				yScaleOffset = image.getHeight() / 2f - yRadius;
+-			}
+-			lastScale = scaleOverride;
+-			if (hoverEffect == 0)
+-				image.draw(x - xRadius, y - yRadius, filter);
+-			else {
+-				float oldAlpha = image.getAlpha();
+-				float oldAngle = image.getRotation();
+-				if ((hoverEffect & EFFECT_EXPAND) > 0) {
+-					if (scale.getValue() != 1f) {
+-						image = image.getScaledCopy(scale.getValue());
+-						image.setAlpha(oldAlpha);
+-						if (scaleOverride != 1f) {
+-							xScaleOffset = image.getWidth() / 2f - xRadius;
+-							yScaleOffset = image.getHeight() / 2f - yRadius;
+-						}
+-						lastScale *= scale.getValue();
+-					}
+-				}
+-				if ((hoverEffect & EFFECT_FADE) > 0)
+-					image.setAlpha(alpha.getValue());
+-				if ((hoverEffect & EFFECT_ROTATE) > 0)
+-					image.setRotation(angle.getValue());
+-				image.draw(x - xRadius - xScaleOffset, y - yRadius - yScaleOffset, filter);
+-				if (image == this.img) {
+-					image.setAlpha(oldAlpha);
+-					image.setRotation(oldAngle);
+-				}
+-			}
++			float oldAlpha = image.getAlpha();
++			float oldAngle = image.getRotation();
++			float drawScale = scaleOverride;
++			if ((hoverEffect & EFFECT_EXPAND) > 0)
++				drawScale *= scale.getValue();
++			lastScale = drawScale;
++
++			if ((hoverEffect & EFFECT_FADE) > 0)
++				image.setAlpha(alpha.getValue());
++			if ((hoverEffect & EFFECT_ROTATE) > 0)
++				image.setRotation(angle.getValue());
++
++			float drawWidth = image.getWidth() * drawScale;
++			float drawHeight = image.getHeight() * drawScale;
++			float xScaleOffset = (scaleOverride == 1f) ? 0f : drawWidth / 2f - xRadius;
++			float yScaleOffset = (scaleOverride == 1f) ? 0f : drawHeight / 2f - yRadius;
++			image.draw(
++				x - xRadius - xScaleOffset,
++				y - yRadius - yScaleOffset,
++				drawWidth,
++				drawHeight,
++				filter
++			);
++			image.setAlpha(oldAlpha);
++			image.setRotation(oldAngle);
+ 		}
+ 
+ 		// 3-part images

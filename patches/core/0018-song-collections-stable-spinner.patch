@@ -1,0 +1,1101 @@
+diff --git a/src/itdelatrisu/opsu/beatmap/BeatmapCollections.java b/src/itdelatrisu/opsu/beatmap/BeatmapCollections.java
+new file mode 100644
+index 00000000..4981b3de
+--- /dev/null
++++ b/src/itdelatrisu/opsu/beatmap/BeatmapCollections.java
+@@ -0,0 +1,266 @@
++/*
++ * opsu! - an open-source osu! client
++ * Copyright (C) 2014-2017 Jeffrey Han
++ *
++ * opsu! is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ */
++
++package itdelatrisu.opsu.beatmap;
++
++import fluddokt.opsu.fake.File;
++
++import itdelatrisu.opsu.ErrorHandler;
++import itdelatrisu.opsu.options.Options;
++
++import java.io.BufferedReader;
++import java.io.BufferedWriter;
++import java.io.IOException;
++import java.util.ArrayList;
++import java.util.LinkedHashMap;
++import java.util.LinkedHashSet;
++import java.util.Locale;
++import java.util.Map;
++
++/**
++ * Persistent, device-local beatmap collections.
++ *
++ * Collections intentionally use a compact text format instead of the osu!
++ * client database format.  This keeps the Android revival independent from
++ * an installed osu! client while still giving maps stable identities across
++ * rescans.
++ */
++public final class BeatmapCollections {
++	/** Managed collection file inside the opsu! user-data directory. */
++	private static final File COLLECTION_FILE = new File(Options.DATA_DIR, ".opsu_collections");
++
++	/** Defensive limits for a user-editable local file. */
++	private static final int MAX_COLLECTIONS = 128, MAX_MEMBERSHIPS = 100000;
++
++	/** Collection name to ordered set of beatmap-set keys. */
++	private static final LinkedHashMap<String, LinkedHashSet<String>> collections =
++			new LinkedHashMap<String, LinkedHashSet<String>>();
++
++	/** Whether the collection file has been loaded. */
++	private static boolean loaded;
++
++	/** Currently selected collection, or {@code null}. */
++	private static String selectedName;
++
++	private BeatmapCollections() {}
++
++	/** Loads the collection file once. */
++	private static synchronized void load() {
++		if (loaded)
++			return;
++		loaded = true;
++		if (!COLLECTION_FILE.isFile() || COLLECTION_FILE.length() > 4 * 1024 * 1024)
++			return;
++
++		int memberships = 0;
++		try (BufferedReader reader = COLLECTION_FILE.reader(8192, "UTF-8")) {
++			String line;
++			while ((line = reader.readLine()) != null) {
++				if (line.isEmpty() || line.charAt(0) == '#')
++					continue;
++				String[] fields = line.split("\\t", -1);
++				if (fields.length < 2)
++					continue;
++				if ("S".equals(fields[0])) {
++					selectedName = cleanName(fields[1]);
++				} else if ("C".equals(fields[0]) && collections.size() < MAX_COLLECTIONS) {
++					String name = cleanName(fields[1]);
++					if (!name.isEmpty() && findCanonicalName(name) == null)
++						collections.put(name, new LinkedHashSet<String>());
++				} else if ("M".equals(fields[0]) && fields.length >= 3 && memberships < MAX_MEMBERSHIPS) {
++					String name = findCanonicalName(cleanName(fields[1]));
++					String key = fields[2].trim();
++					if (name != null && !key.isEmpty()) {
++						collections.get(name).add(key);
++						memberships++;
++					}
++				}
++			}
++		} catch (Exception e) {
++			collections.clear();
++			selectedName = null;
++			ErrorHandler.error("Could not load beatmap collections.", e, false);
++		}
++
++		selectedName = findCanonicalName(selectedName);
++		if (selectedName == null && !collections.isEmpty())
++			selectedName = collections.keySet().iterator().next();
++	}
++
++	/** Saves all collection data. */
++	private static synchronized boolean save() {
++		load();
++		Options.DATA_DIR.mkdir();
++		try (BufferedWriter writer = COLLECTION_FILE.writer("UTF-8")) {
++			writer.write("# opsu! Android collections v1");
++			writer.newLine();
++			if (selectedName != null) {
++				writer.write("S\t");
++				writer.write(selectedName);
++				writer.newLine();
++			}
++			for (Map.Entry<String, LinkedHashSet<String>> entry : collections.entrySet()) {
++				writer.write("C\t");
++				writer.write(entry.getKey());
++				writer.newLine();
++				for (String key : entry.getValue()) {
++					writer.write("M\t");
++					writer.write(entry.getKey());
++					writer.write('\t');
++					writer.write(key);
++					writer.newLine();
++				}
++			}
++			return true;
++		} catch (IOException e) {
++			ErrorHandler.error("Could not save beatmap collections.", e, false);
++			return false;
++		}
++	}
++
++	/** Cleans user-entered names for the line-oriented storage format. */
++	private static String cleanName(String name) {
++		if (name == null)
++			return "";
++		name = name.replace('\t', ' ').replace('\r', ' ').replace('\n', ' ').trim();
++		while (name.contains("  "))
++			name = name.replace("  ", " ");
++		return (name.length() > 40) ? name.substring(0, 40).trim() : name;
++	}
++
++	/** Returns the stored spelling for a collection name. */
++	private static String findCanonicalName(String name) {
++		if (name == null)
++			return null;
++		String lower = name.toLowerCase(Locale.ROOT);
++		for (String storedName : collections.keySet()) {
++			if (storedName.toLowerCase(Locale.ROOT).equals(lower))
++				return storedName;
++		}
++		return null;
++	}
++
++	/** Builds a stable local key for a beatmap set. */
++	private static String getSetKey(BeatmapSet set) {
++		if (set == null || set.size() == 0)
++			return "";
++		Beatmap map = set.get(0);
++		if (map.beatmapSetID > 0)
++			return "s:" + map.beatmapSetID;
++		if (map.md5Hash != null && !map.md5Hash.isEmpty())
++			return "m:" + map.md5Hash;
++		if (map.getFile() != null && map.getFile().getParentFile() != null)
++			return "p:" + map.getFile().getParentFile().getName();
++		return "t:" + map.artist + " - " + map.title;
++	}
++
++	/** Returns collection names in display order. */
++	public static synchronized String[] getNames() {
++		load();
++		return collections.keySet().toArray(new String[collections.size()]);
++	}
++
++	/** Returns whether at least one collection exists. */
++	public static synchronized boolean hasCollections() {
++		load();
++		return !collections.isEmpty();
++	}
++
++	/** Returns the selected collection name, or {@code null}. */
++	public static synchronized String getSelectedName() {
++		load();
++		return selectedName;
++	}
++
++	/** Selects an existing collection. */
++	public static synchronized boolean select(String name) {
++		load();
++		String canonical = findCanonicalName(name);
++		if (canonical == null)
++			return false;
++		selectedName = canonical;
++		return save();
++	}
++
++	/** Creates and selects a collection. */
++	public static synchronized boolean create(String name) {
++		load();
++		name = cleanName(name);
++		if (name.isEmpty() || collections.size() >= MAX_COLLECTIONS || findCanonicalName(name) != null)
++			return false;
++		collections.put(name, new LinkedHashSet<String>());
++		selectedName = name;
++		return save();
++	}
++
++	/** Deletes a collection. */
++	public static synchronized boolean delete(String name) {
++		load();
++		String canonical = findCanonicalName(name);
++		if (canonical == null)
++			return false;
++		collections.remove(canonical);
++		if (canonical.equals(selectedName))
++			selectedName = collections.isEmpty() ? null : collections.keySet().iterator().next();
++		return save();
++	}
++
++	/** Returns whether a set is in a collection. */
++	public static synchronized boolean contains(String name, BeatmapSet set) {
++		load();
++		String canonical = findCanonicalName(name);
++		return canonical != null && collections.get(canonical).contains(getSetKey(set));
++	}
++
++	/** Adds a beatmap set to a collection. */
++	public static synchronized boolean add(String name, BeatmapSet set) {
++		load();
++		String canonical = findCanonicalName(name);
++		String key = getSetKey(set);
++		if (canonical == null || key.isEmpty())
++			return false;
++		if (!collections.get(canonical).add(key))
++			return true;
++		return save();
++	}
++
++	/** Removes a beatmap set from a collection. */
++	public static synchronized boolean remove(String name, BeatmapSet set) {
++		load();
++		String canonical = findCanonicalName(name);
++		if (canonical == null)
++			return false;
++		if (!collections.get(canonical).remove(getSetKey(set)))
++			return true;
++		return save();
++	}
++
++	/** Returns the number of maps in a collection. */
++	public static synchronized int size(String name) {
++		load();
++		String canonical = findCanonicalName(name);
++		return (canonical == null) ? 0 : collections.get(canonical).size();
++	}
++
++	/** Filters parsed nodes to the selected collection. */
++	public static synchronized ArrayList<BeatmapSetNode> filter(ArrayList<BeatmapSetNode> list) {
++		load();
++		ArrayList<BeatmapSetNode> filtered = new ArrayList<BeatmapSetNode>();
++		String canonical = findCanonicalName(selectedName);
++		if (canonical == null)
++			return filtered;
++		LinkedHashSet<String> keys = collections.get(canonical);
++		for (BeatmapSetNode node : list) {
++			if (keys.contains(getSetKey(node.getBeatmapSet())))
++				filtered.add(node);
++		}
++		return filtered;
++	}
++}
+diff --git a/src/itdelatrisu/opsu/beatmap/BeatmapGroup.java b/src/itdelatrisu/opsu/beatmap/BeatmapGroup.java
+index c7b9dcb8..8b718dd3 100644
+--- a/src/itdelatrisu/opsu/beatmap/BeatmapGroup.java
++++ b/src/itdelatrisu/opsu/beatmap/BeatmapGroup.java
+@@ -96,6 +96,14 @@ public enum BeatmapGroup {
+ 			}
+ 			return filteredList;
+ 		}
++	},
++
++	/** Named local beatmap collections. */
++	COLLECTIONS (3, "Collections", "Create or select a collection to see its beatmaps!") {
++		@Override
++		public ArrayList<BeatmapSetNode> filter(ArrayList<BeatmapSetNode> list) {
++			return BeatmapCollections.filter(list);
++		}
+ 	};
+ 
+ 	/** The ID of the group (used for tab positioning). */
+diff --git a/src/itdelatrisu/opsu/beatmap/BeatmapSet.java b/src/itdelatrisu/opsu/beatmap/BeatmapSet.java
+index 12291de1..352b1fb6 100644
+--- a/src/itdelatrisu/opsu/beatmap/BeatmapSet.java
++++ b/src/itdelatrisu/opsu/beatmap/BeatmapSet.java
+@@ -122,6 +122,14 @@ public class BeatmapSet implements Iterable<Beatmap> {
+ 	 * @return true if title, artist, creator, source, version, or tag matches query
+ 	 */
+ 	public boolean matches(String query) {
++		// osu!stable-style quick filters.
++		if ("played".equals(query))
++			return isPlayed();
++		if ("unplayed".equals(query))
++			return !isPlayed();
++		if ("favorite".equals(query) || "favourite".equals(query))
++			return isFavorite();
++
+ 		// search: title, artist, creator, source, version, tags (first beatmap)
+ 		Beatmap beatmap = beatmaps.get(0);
+ 		if (beatmap.title.toLowerCase().contains(query) ||
+diff --git a/src/itdelatrisu/opsu/beatmap/BeatmapSortOrder.java b/src/itdelatrisu/opsu/beatmap/BeatmapSortOrder.java
+index 9dc730a1..c38e1125 100644
+--- a/src/itdelatrisu/opsu/beatmap/BeatmapSortOrder.java
++++ b/src/itdelatrisu/opsu/beatmap/BeatmapSortOrder.java
+@@ -29,6 +29,7 @@ public enum BeatmapSortOrder {
+ 	TITLE   ("Title",       new TitleOrder()),
+ 	ARTIST  ("Artist",      new ArtistOrder()),
+ 	CREATOR ("Creator",     new CreatorOrder()),
++	DIFFICULTY ("Difficulty", new DifficultyOrder()),
+ 	BPM     ("BPM",         new BPMOrder()),
+ 	LENGTH  ("Length",      new LengthOrder()),
+ 	DATE    ("Date Added",  new DateOrder()),
+@@ -95,6 +96,19 @@ public enum BeatmapSortOrder {
+ 		}
+ 	}
+ 
++	/** Compares two beatmap sets by their hardest star rating. */
++	private static class DifficultyOrder implements Comparator<BeatmapSetNode> {
++		@Override
++		public int compare(BeatmapSetNode v, BeatmapSetNode w) {
++			double vMax = 0d, wMax = 0d;
++			for (Beatmap beatmap : v.getBeatmapSet())
++				vMax = Math.max(vMax, beatmap.starRating);
++			for (Beatmap beatmap : w.getBeatmapSet())
++				wMax = Math.max(wMax, beatmap.starRating);
++			return Double.compare(vMax, wMax);
++		}
++	}
++
+ 	/**
+ 	 * Compares two BeatmapSetNode objects by length.
+ 	 * Uses the longest beatmap in each set for comparison.
+@@ -131,7 +145,7 @@ public enum BeatmapSortOrder {
+ 				if (beatmap.dateAdded > wMax)
+ 					wMax = beatmap.dateAdded;
+ 			}
+-			return Long2.compare(vMax, wMax);
++			return Long2.compare(wMax, vMax);
+ 		}
+ 	}
+ 
+@@ -147,7 +161,7 @@ public enum BeatmapSortOrder {
+ 				vTotal += beatmap.playCount;
+ 			for (Beatmap beatmap : w.getBeatmapSet())
+ 				wTotal += beatmap.playCount;
+-			return Integer2.compare(vTotal, wTotal);
++			return Integer2.compare(wTotal, vTotal);
+ 		}
+ 	}
+ 
+diff --git a/src/itdelatrisu/opsu/objects/Spinner.java b/src/itdelatrisu/opsu/objects/Spinner.java
+index a2e4d1ad..19155622 100644
+--- a/src/itdelatrisu/opsu/objects/Spinner.java
++++ b/src/itdelatrisu/opsu/objects/Spinner.java
+@@ -31,6 +31,7 @@ import itdelatrisu.opsu.objects.curves.Vec2f;
+ import itdelatrisu.opsu.options.Options;
+ import itdelatrisu.opsu.states.Game;
+ import itdelatrisu.opsu.ui.Colors;
++import itdelatrisu.opsu.ui.Fonts;
+ 
+ /*
+ import org.newdawn.slick.Color;
+@@ -43,6 +44,12 @@ import org.newdawn.slick.Image;
+  * Data type representing a spinner object.
+  */
+ public class Spinner implements GameObject {
++	/** Reused colors for the stable-style progress ring. */
++	private static final Color
++		PROGRESS_RING = new Color(0.35f, 0.72f, 1f, 0.42f),
++		PROGRESS_RING_COMPLETE = new Color(0.45f, 1f, 0.67f, 0.58f),
++		PROGRESS_RING_INNER = new Color(0f, 0f, 0f, 0.42f),
++		COMPLETION_FLASH = new Color(1f, 1f, 1f, 0f);
+ 	/** Container dimensions. */
+ 	private static int width, height;
+ 
+@@ -86,6 +93,9 @@ public class Spinner implements GameObject {
+ 	/** The current rotation to draw. */
+ 	private float drawRotation = 0f;
+ 
++	/** Smoothed visual rotation, decoupled from scoring samples. */
++	private float visualRotation = 0f;
++
+ 	/** The total number of rotations needed to clear the spinner. */
+ 	private float rotationsNeeded;
+ 
+@@ -110,6 +120,12 @@ public class Spinner implements GameObject {
+ 	/** The RPM that is drawn to the screen. */
+ 	private int drawnRPM = 0;
+ 
++	/** Smoothed RPM display and completion animation progress. */
++	private float displayedRPM = 0f, completionAnimation = 0f;
++
++	/** Whether the spinner has crossed its clear requirement. */
++	private boolean wasComplete;
++
+ 	/**
+ 	 * Initializes the Spinner data type with images and dimensions.
+ 	 * @param container the game container
+@@ -187,6 +203,7 @@ public class Spinner implements GameObject {
+ 
+ 		boolean spinnerComplete = (rotations >= rotationsNeeded);
+ 		float alpha = Utils.clamp(1 - (float) timeDiff / fadeInTime, 0f, 1f);
++		float rotationProgress = Utils.clamp(rotations / Math.max(rotationsNeeded, 0.0001f), 0f, 1f);
+ 
+ 		// darken screen
+ 		if (Options.getSkin().isSpinnerFadePlayfield()) {
+@@ -203,30 +220,48 @@ public class Spinner implements GameObject {
+ 		rpmImg.setAlpha(alpha);
+ 		rpmImg.drawCentered(width / 2f, height - rpmImg.getHeight() / 2f);
+ 		if (timeDiff < 0)
+-			data.drawSymbolString(Integer.toString(drawnRPM), (width + rpmImg.getWidth() * 0.95f) / 2f,
++			data.drawSymbolString(Integer.toString(Math.round(displayedRPM)), (width + rpmImg.getWidth() * 0.95f) / 2f,
+ 					height - data.getScoreSymbolImage('0').getHeight() * 1.025f, 1f, 1f, true);
+ 
+ 		if(!Options.GameOption.DISABLE_SPINNER_UI.getBooleanValue()) {
+ 			//>>>>>>>>>>
++		// stable-style circular clear progress, kept behind skinned spinner art
++		float ringSize = Math.min(width, height) * 0.78f;
++		float ringX = (width - ringSize) / 2f;
++		float ringY = (height - ringSize) / 2f;
++		g.setColor(spinnerComplete ? PROGRESS_RING_COMPLETE : PROGRESS_RING);
++		g.fillArc(ringX, ringY, ringSize, ringSize, -90f, -90f + 359.9f * rotationProgress);
++		float ringThickness = Math.max(7f, ringSize * 0.025f);
++		g.setColor(PROGRESS_RING_INNER);
++		g.fillArc(ringX + ringThickness, ringY + ringThickness,
++			ringSize - ringThickness * 2f, ringSize - ringThickness * 2f, 0f, 359.9f);
++
+ 		// spinner meter (subimage)
+ 		Image spinnerMetre = GameImage.SPINNER_METRE.getImage();
+ 		int spinnerMetreY = (spinnerComplete) ? 0 : (int) (spinnerMetre.getHeight() * (1 - (rotations / rotationsNeeded)));
+-		Image spinnerMetreSub = spinnerMetre.getSubImage(
+-				0, spinnerMetreY,
+-				spinnerMetre.getWidth(), spinnerMetre.getHeight() - spinnerMetreY
+-		);
+-		spinnerMetreSub.setAlpha(alpha);
+-		spinnerMetreSub.draw(0, height - spinnerMetreSub.getHeight());
++		int spinnerMetreHeight = spinnerMetre.getHeight() - spinnerMetreY;
++		if (spinnerMetreHeight > 0) {
++			g.setClip(0, height - spinnerMetreHeight, spinnerMetre.getWidth(), spinnerMetreHeight);
++			spinnerMetre.setAlpha(alpha);
++			spinnerMetre.draw(0, height - spinnerMetre.getHeight());
++			spinnerMetre.setAlpha(1f);
++			g.clearClip();
++		}
+ 
+ 		// main spinner elements
+ 		GameImage.SPINNER_CIRCLE.getImage().setAlpha(alpha);
+-		GameImage.SPINNER_CIRCLE.getImage().setRotation(drawRotation * 360f);
++		GameImage.SPINNER_CIRCLE.getImage().setRotation(visualRotation * 360f);
+ 		GameImage.SPINNER_CIRCLE.getImage().drawCentered(width / 2, height / 2);
++		GameImage.SPINNER_CIRCLE.getImage().setAlpha(1f);
+ 		if (!GameMod.HIDDEN.isActive()) {
+ 			float approachScale = 1 - Utils.clamp(((float) timeDiff / (hitObject.getTime() - hitObject.getEndTime())), 0f, 1f);
+-			Image approachCircleScaled = GameImage.SPINNER_APPROACHCIRCLE.getImage().getScaledCopy(approachScale);
+-			approachCircleScaled.setAlpha(alpha);
+-			approachCircleScaled.drawCentered(width / 2, height / 2);
++			Image approachCircle = GameImage.SPINNER_APPROACHCIRCLE.getImage();
++			float approachWidth = approachCircle.getWidth() * approachScale;
++			float approachHeight = approachCircle.getHeight() * approachScale;
++			approachCircle.setAlpha(alpha);
++			approachCircle.draw(width / 2f - approachWidth / 2f, height / 2f - approachHeight / 2f,
++				approachWidth, approachHeight);
++			approachCircle.setAlpha(1f);
+ 		}
+ 			//>>>>>>>>>>
+ 		} else {
+@@ -236,11 +271,29 @@ public class Spinner implements GameObject {
+ 			g.drawOval(width / 2 - radius, height/2 - radius, radius*2, radius*2);
+ 			
+ 		}
+-		GameImage.SPINNER_SPIN.getImage().setAlpha(alpha);
+-		GameImage.SPINNER_SPIN.getImage().drawCentered(width / 2, height * 3 / 4);
++		if (!spinnerComplete) {
++			GameImage.SPINNER_SPIN.getImage().setAlpha(alpha);
++			GameImage.SPINNER_SPIN.getImage().drawCentered(width / 2, height * 3 / 4);
++			GameImage.SPINNER_SPIN.getImage().setAlpha(1f);
++		}
++		String progressText = Math.round(rotationProgress * 100f) + "%";
++		Fonts.BOLD.drawString((width - Fonts.BOLD.getWidth(progressText)) / 2f,
++			height * 0.68f, progressText, spinnerComplete ? Colors.LIGHT_GREEN : Color.white);
+ 
+ 		if (spinnerComplete) {
+-			GameImage.SPINNER_CLEAR.getImage().drawCentered(width / 2, height / 4);
++			Image clear = GameImage.SPINNER_CLEAR.getImage();
++			float clearScale = 1f + 0.10f * (float) Math.sin(completionAnimation * Math.PI);
++			float clearWidth = clear.getWidth() * clearScale;
++			float clearHeight = clear.getHeight() * clearScale;
++			clear.draw(width / 2f - clearWidth / 2f, height / 4f - clearHeight / 2f,
++				clearWidth, clearHeight);
++			if (completionAnimation < 1f) {
++				float oldFlashAlpha = COMPLETION_FLASH.a;
++				COMPLETION_FLASH.a = (1f - completionAnimation) * 0.24f * alpha;
++				g.setColor(COMPLETION_FLASH);
++				g.fillRect(0, 0, width, height);
++				COMPLETION_FLASH.a = oldFlashAlpha;
++			}
+ 			int extraRotations = (int) (rotations - rotationsNeeded);
+ 			if (extraRotations > 0)
+ 				data.drawSymbolNumber(extraRotations * 1000, width / 2, height * 2 / 3, 1f, 1f);
+@@ -254,7 +307,7 @@ public class Spinner implements GameObject {
+ 	private int hitResult() {
+ 		// TODO: verify ratios
+ 		int result;
+-		float ratio = rotations / rotationsNeeded;
++		float ratio = rotations / Math.max(rotationsNeeded, 0.0001f);
+ 		if (ratio >= 1.0f || GameMod.AUTO.isActive() || GameMod.AUTOPILOT.isActive() || GameMod.SPUN_OUT.isActive()) {
+ 			result = GameData.HIT_300;
+ 			if (!Options.isGameplaySoundDisabled())
+@@ -273,7 +326,7 @@ public class Spinner implements GameObject {
+ 
+ 	@Override
+ 	public boolean mousePressed(int x, int y, int trackPosition) {
+-		lastAngle = (float) Math.atan2(x - (height / 2), y - (width / 2));
++		lastAngle = (float) Math.atan2(y - (height / 2f), x - (width / 2f));
+ 		return false;
+ 	}
+ 
+@@ -352,6 +405,19 @@ public class Spinner implements GameObject {
+ 			rotate(rotationAngle);
+ 		}
+ 
++		// Smooth presentation independently from fixed 60 Hz scoring samples.
++		float rotationBlend = 1f - (float) Math.exp(-delta / 42f);
++		float rpmBlend = 1f - (float) Math.exp(-delta / 90f);
++		visualRotation += (drawRotation - visualRotation) * rotationBlend;
++		displayedRPM += (drawnRPM - displayedRPM) * rpmBlend;
++		boolean complete = rotations >= rotationsNeeded;
++		if (complete) {
++			if (!wasComplete)
++				completionAnimation = 0f;
++			completionAnimation = Utils.clamp(completionAnimation + delta / 360f, 0f, 1f);
++		}
++		wasComplete = complete;
++
+ 		//TODO may need to update 1 more time when the spinner ends?
+ 		return false;
+ 	}
+@@ -391,7 +457,7 @@ public class Spinner implements GameObject {
+ 		float newRotations = rotations + (angle / TWO_PI);
+ 
+ 		// added one whole rotation...
+-		if (Math.floor(newRotations) > rotations) {
++		if (Math.floor(newRotations) > Math.floor(rotations)) {
+ 			if (newRotations > rotationsNeeded)  // extra rotations
+ 				data.sendSpinnerSpinResult(GameData.HIT_SPINNERBONUS);
+ 			else
+@@ -408,8 +474,13 @@ public class Spinner implements GameObject {
+ 		for (int i = 0; i < storedDeltaAngle.length; i++)
+ 			storedDeltaAngle[i] = 0;
+ 		drawRotation = 0;
++		visualRotation = 0;
+ 		rotations = 0;
+ 		deltaOverflow = 0;
+ 		isSpinning = false;
++		drawnRPM = 0;
++		displayedRPM = 0f;
++		completionAnimation = 0f;
++		wasComplete = false;
+ 	}
+ }
+diff --git a/src/itdelatrisu/opsu/states/SongMenu.java b/src/itdelatrisu/opsu/states/SongMenu.java
+index 1c0261c4..3a08bddb 100644
+--- a/src/itdelatrisu/opsu/states/SongMenu.java
++++ b/src/itdelatrisu/opsu/states/SongMenu.java
+@@ -33,6 +33,7 @@ import itdelatrisu.opsu.audio.MusicController;
+ import itdelatrisu.opsu.audio.SoundController;
+ import itdelatrisu.opsu.audio.SoundEffect;
+ import itdelatrisu.opsu.beatmap.Beatmap;
++import itdelatrisu.opsu.beatmap.BeatmapCollections;
+ import itdelatrisu.opsu.beatmap.BeatmapDifficultyCalculator;
+ import itdelatrisu.opsu.beatmap.BeatmapGroup;
+ import itdelatrisu.opsu.beatmap.BeatmapParser;
+@@ -121,6 +122,11 @@ public class SongMenu extends BasicGameState {
+ 	/** Fast scrolling speed multiplier. */
+ 	private static final float FAST_SCROLL_SPEED = 2f;
+ 
++	/** Collection overlay colors (reused to avoid frame-time allocation). */
++	private static final Color
++		COLLECTION_OVERLAY_BG = new Color(0f, 0f, 0f, 0.82f),
++		COLLECTION_PANEL_BG = new Color(0.035f, 0.055f, 0.10f, 0.97f);
++
+ 	/** Song node class representing an BeatmapSetNode and file index. */
+ 	private static class SongNode {
+ 		/** Song node. */
+@@ -189,6 +195,18 @@ public class SongMenu extends BasicGameState {
+ 	/** The search font. */
+ 	private UnicodeFont searchFont;
+ 
++	/** Collection manager overlay state. */
++	private boolean showCollectionOverlay;
++	private TextField collectionNameInput;
++	private BeatmapSetNode collectionTargetNode;
++	private String[] collectionNames = new String[0];
++	private int collectionSelectedIndex = -1, collectionListStart;
++	private float collectionPanelX, collectionPanelY, collectionPanelWidth, collectionPanelHeight;
++	private float collectionListX, collectionListY, collectionListWidth, collectionRowHeight;
++	private float collectionActionsX, collectionActionsY, collectionActionsWidth;
++	private float collectionNameX, collectionNameY, collectionNameWidth, collectionCreateX, collectionCreateWidth;
++	private int collectionVisibleRows;
++
+ 	/**
+ 	 * Delay timer, in milliseconds, before running another search.
+ 	 * This is overridden by character entry (reset) and 'esc' (immediate search).
+@@ -475,6 +493,15 @@ public class SongMenu extends BasicGameState {
+ 		search.setConsumeEvents(false);
+ 		search.setMaxLength(60);
+ 
++		// named collection entry field (positioned when the overlay is drawn)
++		collectionNameInput = new TextField(container, Fonts.MEDIUM, 0, 0, 1, Fonts.MEDIUM.getLineHeight());
++		collectionNameInput.setBackgroundColor(Colors.BLACK_BG_HOVER);
++		collectionNameInput.setBorderColor(Colors.BLUE_DIVIDER);
++		collectionNameInput.setTextColor(Color.white);
++		collectionNameInput.setConsumeEvents(false);
++		collectionNameInput.setMaxLength(40);
++		collectionNameInput.setFocus(false);
++
+ 		// selection buttons
+ 		Image selectionMods = GameImage.SELECTION_MODS.getImage();
+ 		float selectX = width * 0.183f + selectionMods.getWidth() / 2f;
+@@ -670,10 +697,14 @@ public class SongMenu extends BasicGameState {
+ 			float expand = position * 0.15f;
+ 			footerLogoButton.draw(Color.white, 1f - expand);
+ 			Image ghostLogo = GameImage.MENU_LOGO.getImage();
+-			ghostLogo = ghostLogo.getScaledCopy((1f + expand) * footerLogoSize / ghostLogo.getWidth());
++			float ghostSize = (1f + expand) * footerLogoSize;
+ 			float oldGhostAlpha = Colors.GHOST_LOGO.a;
+ 			Colors.GHOST_LOGO.a *= (1f - position);
+-			ghostLogo.drawCentered(footerLogoButton.getX(), footerLogoButton.getY(), Colors.GHOST_LOGO);
++			ghostLogo.draw(
++				footerLogoButton.getX() - ghostSize / 2f,
++				footerLogoButton.getY() - ghostSize / 2f,
++				ghostSize, ghostSize, Colors.GHOST_LOGO
++			);
+ 			Colors.GHOST_LOGO.a = oldGhostAlpha;
+ 		}
+ 
+@@ -689,7 +720,13 @@ public class SongMenu extends BasicGameState {
+ 				if (t > 1)
+ 					t = 2f - t;
+ 				float musicNoteScale = 1f + 0.3f * t;
+-				musicNote.getScaledCopy(musicNoteScale).drawCentered(marginX + musicNote.getWidth() / 2f, marginY + musicNote.getHeight() / 2f);
++				float noteWidth = musicNote.getWidth() * musicNoteScale;
++				float noteHeight = musicNote.getHeight() * musicNoteScale;
++				musicNote.draw(
++					marginX + (musicNote.getWidth() - noteWidth) / 2f,
++					marginY + (musicNote.getHeight() - noteHeight) / 2f,
++					noteWidth, noteHeight
++				);
+ 			}
+ 			int iconWidth = musicNote.getWidth();
+ 
+@@ -833,6 +870,10 @@ public class SongMenu extends BasicGameState {
+ 		if (showUserOverlay || !userOverlayProgress.isFinished())
+ 			userOverlay.render(container, g);
+ 
++		// named collection manager
++		if (showCollectionOverlay)
++			renderCollectionOverlay(g);
++
+ 		UI.draw(g);
+ 	}
+ 
+@@ -920,12 +961,15 @@ public class SongMenu extends BasicGameState {
+ 		// star stream
+ 		starStream.update(delta);
+ 
+-		// search
+-		search.setFocus(true);
+-		searchTimer += delta;
+-		if (searchTimer >= SEARCH_DELAY && reloadThread == null && beatmapMenuTimer == -1) {
+-			searchTimer = 0;
+-			updateSearch();
++		// search / collection text entry
++		search.setFocus(!showCollectionOverlay);
++		collectionNameInput.setFocus(showCollectionOverlay);
++		if (!showCollectionOverlay) {
++			searchTimer += delta;
++			if (searchTimer >= SEARCH_DELAY && reloadThread == null && beatmapMenuTimer == -1) {
++				searchTimer = 0;
++				updateSearch();
++			}
+ 		}
+ 		if (searchTransitionTimer < SEARCH_TRANSITION_TIME) {
+ 			searchTransitionTimer += delta;
+@@ -992,6 +1036,8 @@ public class SongMenu extends BasicGameState {
+ 		// check mouse button
+ 		if (button == Input.MOUSE_MIDDLE_BUTTON)
+ 			return;
++		if (showCollectionOverlay)
++			return;
+ 
+ 		// block input
+ 		if (isInputBlocked())
+@@ -1035,6 +1081,8 @@ public class SongMenu extends BasicGameState {
+ 		// check mouse button
+ 		if (button == Input.MOUSE_MIDDLE_BUTTON)
+ 			return;
++		if (showCollectionOverlay)
++			return;
+ 
+ 		if (isScrollingToFocusNode)
+ 			return;
+@@ -1053,6 +1101,10 @@ public class SongMenu extends BasicGameState {
+ 		// check mouse button
+ 		if (button == Input.MOUSE_MIDDLE_BUTTON)
+ 			return;
++		if (showCollectionOverlay) {
++			handleCollectionOverlayClick(x, y);
++			return;
++		}
+ 
+ 		// block input
+ 		if (isInputBlocked())
+@@ -1100,23 +1152,13 @@ public class SongMenu extends BasicGameState {
+ 		// group tabs
+ 		for (BeatmapGroup group : BeatmapGroup.values()) {
+ 			if (group.contains(x, y)) {
++				if (group == BeatmapGroup.COLLECTIONS) {
++					openCollectionOverlay();
++					return;
++				}
+ 				if (group != BeatmapGroup.current()) {
+-					BeatmapGroup.set(group);
+ 					SoundController.playSound(SoundEffect.MENUCLICK);
+-					startNode = focusNode = null;
+-					oldFocusNode = null;
+-					randomStack = new Stack<SongNode>();
+-					songInfo = null;
+-					scoreMap = null;
+-					focusScores = null;
+-					search.setText("");
+-					searchTimer = SEARCH_DELAY;
+-					searchTransitionTimer = SEARCH_TRANSITION_TIME;
+-					searchResultString = null;
+-					lastSearchResultString = null;
+-					BeatmapSetList.get().reset();
+-					BeatmapSetList.get().init();
+-					setFocus(BeatmapSetList.get().getRandomNode(), 0, true, true);
++					switchBeatmapGroup(group);
+ 
+ 					if (BeatmapSetList.get().size() < 1 && group.getEmptyMessage() != null)
+ 						UI.getNotificationManager().sendBarNotification(group.getEmptyMessage());
+@@ -1199,6 +1241,27 @@ public class SongMenu extends BasicGameState {
+ 
+ 	@Override
+ 	public void keyPressed(int key, char c) {
++		if (showCollectionOverlay) {
++			switch (key) {
++			case Input.ANDROID_BACK:
++			case Input.KEY_ESCAPE:
++				closeCollectionOverlay();
++				break;
++			case Input.KEY_ENTER:
++				createCollectionFromInput();
++				break;
++			case Input.KEY_UP:
++				moveCollectionSelection(-1);
++				break;
++			case Input.KEY_DOWN:
++				moveCollectionSelection(1);
++				break;
++			default:
++				break;
++			}
++			return;
++		}
++
+ 		// block input
+ 		if ((reloadThread != null && !(key == Input.KEY_ESCAPE || key == Input.KEY_F12)) || beatmapMenuTimer > -1 || isScrollingToFocusNode)
+ 			return;
+@@ -1358,6 +1421,8 @@ public class SongMenu extends BasicGameState {
+ 
+ 	@Override
+ 	public void mouseDragged(int oldx, int oldy, int newx, int newy) {
++		if (showCollectionOverlay)
++			return;
+ 		// block input
+ 		if (isInputBlocked())
+ 			return;
+@@ -1385,6 +1450,10 @@ public class SongMenu extends BasicGameState {
+ 
+ 	@Override
+ 	public void mouseWheelMoved(int newValue) {
++		if (showCollectionOverlay) {
++			moveCollectionSelection((newValue < 0) ? 1 : -1);
++			return;
++		}
+ 		// change volume
+ 		if (UI.globalMouseWheelMoved(newValue, true))
+ 			return;
+@@ -1443,6 +1512,8 @@ public class SongMenu extends BasicGameState {
+ 		userOverlay.deactivate();
+ 		showUserOverlay = false;
+ 		userOverlayProgress.setTime(userOverlayProgress.getDuration());
++		showCollectionOverlay = false;
++		collectionNameInput.setFocus(false);
+ 
+ 		// reset song stack
+ 		randomStack = new Stack<SongNode>();
+@@ -1606,6 +1677,8 @@ public class SongMenu extends BasicGameState {
+ 	public void leave(GameContainer container, StateBasedGame game)
+ 			throws SlickException {
+ 		search.setFocus(false);
++		collectionNameInput.setFocus(false);
++		showCollectionOverlay = false;
+ 		sortMenu.deactivate();
+ 		optionsOverlay.deactivate();
+ 		optionsOverlay.reset();
+@@ -1614,6 +1687,282 @@ public class SongMenu extends BasicGameState {
+ 		showUserOverlay = false;
+ 	}
+ 
++	/** Opens the mobile-friendly named collection manager. */
++	private void openCollectionOverlay() {
++		SoundController.playSound(SoundEffect.MENUCLICK);
++		collectionTargetNode = focusNode;
++		collectionNames = BeatmapCollections.getNames();
++		String selectedName = BeatmapCollections.getSelectedName();
++		collectionSelectedIndex = -1;
++		for (int i = 0; i < collectionNames.length; i++) {
++			if (collectionNames[i].equals(selectedName)) {
++				collectionSelectedIndex = i;
++				break;
++			}
++		}
++		if (collectionSelectedIndex < 0 && collectionNames.length > 0)
++			collectionSelectedIndex = 0;
++		collectionNameInput.setText("");
++		collectionNameInput.setFocus(true);
++		search.setFocus(false);
++		sortMenu.deactivate();
++		showCollectionOverlay = true;
++	}
++
++	/** Closes the collection manager. */
++	private void closeCollectionOverlay() {
++		showCollectionOverlay = false;
++		collectionNameInput.setFocus(false);
++		search.setFocus(true);
++		sortMenu.activate();
++	}
++
++	/** Rebuilds the song list for a group. */
++	private void switchBeatmapGroup(BeatmapGroup group) {
++		BeatmapGroup.set(group);
++		startNode = focusNode = null;
++		oldFocusNode = null;
++		randomStack = new Stack<SongNode>();
++		songInfo = null;
++		scoreMap = null;
++		focusScores = null;
++		search.setText("");
++		searchTimer = SEARCH_DELAY;
++		searchTransitionTimer = SEARCH_TRANSITION_TIME;
++		searchResultString = null;
++		lastSearchResultString = null;
++		lastSearchTextLength = 0;
++		BeatmapSetList.get().reset();
++		BeatmapSetList.get().init();
++		if (BeatmapSetList.get().size() > 0)
++			setFocus(BeatmapSetList.get().getRandomNode(), 0, true, true);
++	}
++
++	/** Updates cached overlay layout coordinates. */
++	private void updateCollectionLayout() {
++		float width = container.getWidth(), height = container.getHeight();
++		collectionPanelX = width * 0.12f;
++		collectionPanelY = height * 0.105f;
++		collectionPanelWidth = width * 0.76f;
++		collectionPanelHeight = height * 0.79f;
++		float margin = Math.max(12f, collectionPanelWidth * 0.025f);
++		collectionRowHeight = Math.max(Fonts.MEDIUM.getLineHeight() * 1.45f, height * 0.065f);
++		collectionListX = collectionPanelX + margin;
++		collectionListY = collectionPanelY + Fonts.LARGE.getLineHeight() * 1.55f;
++		collectionListWidth = collectionPanelWidth * 0.44f;
++		collectionNameY = collectionPanelY + collectionPanelHeight - margin - collectionRowHeight;
++		collectionVisibleRows = Math.max(1, (int) ((collectionNameY - collectionListY - margin) / collectionRowHeight));
++		collectionActionsX = collectionListX + collectionListWidth + margin;
++		collectionActionsY = collectionListY;
++		collectionActionsWidth = collectionPanelX + collectionPanelWidth - margin - collectionActionsX;
++		collectionCreateWidth = Math.max(Fonts.MEDIUMBOLD.getWidth("Create") * 1.5f, collectionPanelWidth * 0.14f);
++		collectionCreateX = collectionPanelX + collectionPanelWidth - margin - collectionCreateWidth;
++		collectionNameX = collectionPanelX + margin;
++		collectionNameWidth = collectionCreateX - margin - collectionNameX;
++		collectionNameInput.setBound(
++			(int) collectionNameX, (int) collectionNameY,
++			(int) collectionNameWidth, (int) collectionRowHeight
++		);
++
++		if (collectionSelectedIndex < 0)
++			collectionListStart = 0;
++		else
++			collectionListStart = Utils.clamp(
++				collectionSelectedIndex - collectionVisibleRows / 2,
++				0, Math.max(0, collectionNames.length - collectionVisibleRows)
++			);
++	}
++
++	/** Draws the collection manager over song selection. */
++	private void renderCollectionOverlay(Graphics g) {
++		updateCollectionLayout();
++		int width = container.getWidth(), height = container.getHeight();
++		g.setColor(COLLECTION_OVERLAY_BG);
++		g.fillRect(0, 0, width, height);
++		g.setColor(COLLECTION_PANEL_BG);
++		g.fillRoundRect(collectionPanelX, collectionPanelY, collectionPanelWidth, collectionPanelHeight, 12);
++		g.setColor(Colors.BLUE_DIVIDER);
++		g.setLineWidth(2f);
++		g.drawRoundRect((int) collectionPanelX, (int) collectionPanelY,
++			(int) collectionPanelWidth, (int) collectionPanelHeight, 12);
++		g.resetLineWidth();
++
++		Fonts.LARGE.drawString(collectionListX, collectionPanelY + collectionPanelHeight * 0.025f,
++			"Beatmap Collections", Color.white);
++		Fonts.SMALL.drawString(collectionListX, collectionListY - Fonts.SMALL.getLineHeight(),
++			"Select a collection, then open it or manage the current beatmap.", Color.lightGray);
++
++		int listEnd = Math.min(collectionNames.length, collectionListStart + collectionVisibleRows);
++		for (int i = collectionListStart; i < listEnd; i++) {
++			float rowY = collectionListY + (i - collectionListStart) * collectionRowHeight;
++			boolean selected = (i == collectionSelectedIndex);
++			g.setColor(selected ? Colors.BLUE_DIVIDER : Colors.BLACK_BG_HOVER);
++			g.fillRoundRect(collectionListX, rowY, collectionListWidth, collectionRowHeight * 0.88f, 6);
++			String label = collectionNames[i] + "  (" + BeatmapCollections.size(collectionNames[i]) + ")";
++			label = ellipsize(label, Fonts.MEDIUMBOLD, (int) (collectionListWidth * 0.92f));
++			Fonts.MEDIUMBOLD.drawString(collectionListX + collectionListWidth * 0.04f,
++				rowY + (collectionRowHeight * 0.88f - Fonts.MEDIUMBOLD.getLineHeight()) / 2f,
++				label, Color.white);
++		}
++		if (collectionNames.length == 0) {
++			Fonts.MEDIUM.drawString(collectionListX, collectionListY + collectionRowHeight * 0.25f,
++				"No collections yet. Create one below.", Color.lightGray);
++		}
++
++		String selectedName = getSelectedCollectionName();
++		boolean hasSelection = selectedName != null;
++		boolean hasTarget = collectionTargetNode != null;
++		drawCollectionButton(g, collectionActionsX, collectionActionsY,
++			collectionActionsWidth, collectionRowHeight, "Open collection", hasSelection);
++		String mapAction = "Add current beatmap";
++		if (hasSelection && hasTarget && BeatmapCollections.contains(selectedName, collectionTargetNode.getBeatmapSet()))
++			mapAction = "Remove current beatmap";
++		drawCollectionButton(g, collectionActionsX, collectionActionsY + collectionRowHeight * 1.15f,
++			collectionActionsWidth, collectionRowHeight, mapAction, hasSelection && hasTarget);
++		drawCollectionButton(g, collectionActionsX, collectionActionsY + collectionRowHeight * 2.30f,
++			collectionActionsWidth, collectionRowHeight, "Delete collection", hasSelection);
++		drawCollectionButton(g, collectionActionsX, collectionActionsY + collectionRowHeight * 3.45f,
++			collectionActionsWidth, collectionRowHeight, "Close", true);
++
++		if (hasTarget) {
++			String target = ellipsize("Current: " + collectionTargetNode.getBeatmapSet().toString(),
++				Fonts.SMALL, (int) collectionActionsWidth);
++			Fonts.SMALL.drawString(collectionActionsX,
++				collectionActionsY + collectionRowHeight * 4.70f, target, Color.lightGray);
++		}
++
++		collectionNameInput.render(container, g);
++		if (collectionNameInput.getText().isEmpty())
++			Fonts.MEDIUM.drawString(collectionNameX + 8f,
++				collectionNameY + (collectionRowHeight - Fonts.MEDIUM.getLineHeight()) / 2f,
++				"New collection name", Color.lightGray);
++		drawCollectionButton(g, collectionCreateX, collectionNameY,
++			collectionCreateWidth, collectionRowHeight, "Create", true);
++	}
++
++	/** Draws one overlay action button. */
++	private void drawCollectionButton(Graphics g, float x, float y, float width, float height,
++			String text, boolean enabled) {
++		g.setColor(enabled ? Colors.BLUE_BUTTON : Colors.DARK_GRAY);
++		g.fillRoundRect(x, y, width, height * 0.88f, 6);
++		Color textColor = enabled ? Color.white : Color.lightGray;
++		String label = ellipsize(text, Fonts.MEDIUMBOLD, (int) (width * 0.92f));
++		Fonts.MEDIUMBOLD.drawString(x + (width - Fonts.MEDIUMBOLD.getWidth(label)) / 2f,
++			y + (height * 0.88f - Fonts.MEDIUMBOLD.getLineHeight()) / 2f, label, textColor);
++	}
++
++	/** Trims a label to a pixel width. */
++	private String ellipsize(String text, UnicodeFont font, int maxWidth) {
++		if (font.getWidth(text) <= maxWidth)
++			return text;
++		String suffix = "...";
++		int length = text.length();
++		while (length > 0 && font.getWidth(text.substring(0, length) + suffix) > maxWidth)
++			length--;
++		return text.substring(0, length) + suffix;
++	}
++
++	/** Returns the highlighted collection name. */
++	private String getSelectedCollectionName() {
++		return (collectionSelectedIndex >= 0 && collectionSelectedIndex < collectionNames.length) ?
++			collectionNames[collectionSelectedIndex] : null;
++	}
++
++	/** Moves the highlighted collection. */
++	private void moveCollectionSelection(int shift) {
++		if (collectionNames.length == 0)
++			return;
++		collectionSelectedIndex = Utils.clamp(collectionSelectedIndex + shift, 0, collectionNames.length - 1);
++	}
++
++	/** Creates a named collection from the input field. */
++	private void createCollectionFromInput() {
++		String name = collectionNameInput.getText();
++		if (!BeatmapCollections.create(name)) {
++			UI.getNotificationManager().sendBarNotification("Enter a unique collection name.");
++			return;
++		}
++		collectionNames = BeatmapCollections.getNames();
++		collectionSelectedIndex = collectionNames.length - 1;
++		collectionNameInput.setText("");
++		SoundController.playSound(SoundEffect.MENUCLICK);
++		UI.getNotificationManager().sendBarNotification("Collection created.");
++	}
++
++	/** Handles taps inside the collection manager. */
++	private void handleCollectionOverlayClick(int x, int y) {
++		updateCollectionLayout();
++		int listEnd = Math.min(collectionNames.length, collectionListStart + collectionVisibleRows);
++		if (x >= collectionListX && x <= collectionListX + collectionListWidth && y >= collectionListY) {
++			int row = (int) ((y - collectionListY) / collectionRowHeight) + collectionListStart;
++			if (row >= collectionListStart && row < listEnd) {
++				collectionSelectedIndex = row;
++				SoundController.playSound(SoundEffect.MENUCLICK);
++				return;
++			}
++		}
++
++		if (containsCollectionButton(x, y, collectionCreateX, collectionNameY, collectionCreateWidth)) {
++			createCollectionFromInput();
++			return;
++		}
++
++		String selectedName = getSelectedCollectionName();
++		if (containsCollectionButton(x, y, collectionActionsX, collectionActionsY, collectionActionsWidth)) {
++			if (selectedName != null && BeatmapCollections.select(selectedName)) {
++				closeCollectionOverlay();
++				switchBeatmapGroup(BeatmapGroup.COLLECTIONS);
++				if (BeatmapSetList.get().size() < 1)
++					UI.getNotificationManager().sendBarNotification("This collection is empty.");
++			}
++			return;
++		}
++
++		if (containsCollectionButton(x, y, collectionActionsX,
++				collectionActionsY + collectionRowHeight * 1.15f, collectionActionsWidth)) {
++			if (selectedName != null && collectionTargetNode != null) {
++				BeatmapSet set = collectionTargetNode.getBeatmapSet();
++				boolean contains = BeatmapCollections.contains(selectedName, set);
++				boolean changed = contains ? BeatmapCollections.remove(selectedName, set) :
++					BeatmapCollections.add(selectedName, set);
++				if (changed) {
++					SoundController.playSound(SoundEffect.MENUCLICK);
++					UI.getNotificationManager().sendBarNotification(
++						contains ? "Beatmap removed from collection." : "Beatmap added to collection."
++					);
++					if (BeatmapGroup.current() == BeatmapGroup.COLLECTIONS) {
++						closeCollectionOverlay();
++						switchBeatmapGroup(BeatmapGroup.COLLECTIONS);
++					}
++				}
++			}
++			return;
++		}
++
++		if (containsCollectionButton(x, y, collectionActionsX,
++				collectionActionsY + collectionRowHeight * 2.30f, collectionActionsWidth)) {
++			if (selectedName != null && BeatmapCollections.delete(selectedName)) {
++				collectionNames = BeatmapCollections.getNames();
++				collectionSelectedIndex = collectionNames.length == 0 ? -1 :
++					Math.min(collectionSelectedIndex, collectionNames.length - 1);
++				if (BeatmapGroup.current() == BeatmapGroup.COLLECTIONS)
++					switchBeatmapGroup(BeatmapGroup.COLLECTIONS);
++				SoundController.playSound(SoundEffect.MENUCLICK);
++				UI.getNotificationManager().sendBarNotification("Collection deleted.");
++			}
++			return;
++		}
++
++		if (containsCollectionButton(x, y, collectionActionsX,
++				collectionActionsY + collectionRowHeight * 3.45f, collectionActionsWidth))
++			closeCollectionOverlay();
++	}
++
++	/** Returns whether a point is inside an overlay action button. */
++	private boolean containsCollectionButton(float x, float y, float bx, float by, float width) {
++		return x >= bx && x <= bx + width && y >= by && y <= by + collectionRowHeight * 0.88f;
++	}
++
+ 	/** Updates the search. */
+ 	private void updateSearch() {
+ 		// don't initially search

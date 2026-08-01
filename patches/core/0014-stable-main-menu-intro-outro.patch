@@ -1,0 +1,477 @@
+diff --git a/src/itdelatrisu/opsu/audio/SoundEffect.java b/src/itdelatrisu/opsu/audio/SoundEffect.java
+index 2334ad1b..c1fbb8e4 100644
+--- a/src/itdelatrisu/opsu/audio/SoundEffect.java
++++ b/src/itdelatrisu/opsu/audio/SoundEffect.java
+@@ -41,7 +41,9 @@ public enum SoundEffect implements SoundController.SoundComponent {
+ 	SHUTTER ("shutter"),
+ 	SPINNERBONUS ("spinnerbonus"),
+ 	SPINNEROSU ("spinner-osu"),
+-	SPINNERSPIN ("spinnerspin");
++	SPINNERSPIN ("spinnerspin"),
++	WELCOME ("welcome"),
++	SEEYA ("seeya");
+ 
+ 	/** The file name. */
+ 	private final String filename;
+diff --git a/src/itdelatrisu/opsu/states/ButtonMenu.java b/src/itdelatrisu/opsu/states/ButtonMenu.java
+index 0a186dfa..2387e586 100644
+--- a/src/itdelatrisu/opsu/states/ButtonMenu.java
++++ b/src/itdelatrisu/opsu/states/ButtonMenu.java
+@@ -451,7 +451,8 @@ public class ButtonMenu extends BasicGameState {
+ 		YES ("Yes", Color.green) {
+ 			@Override
+ 			public void click(GameContainer container, StateBasedGame game) {
+-				container.exit();
++				((MainMenu) game.getState(Opsu.STATE_MAINMENU)).startExitSequence();
++				game.enterState(Opsu.STATE_MAINMENU, new EmptyTransition(), new FadeInTransition());
+ 			}
+ 		},
+ 		NO ("No", Color.red) {
+diff --git a/src/itdelatrisu/opsu/states/MainMenu.java b/src/itdelatrisu/opsu/states/MainMenu.java
+index 4f6ae1c8..c9a5842b 100644
+--- a/src/itdelatrisu/opsu/states/MainMenu.java
++++ b/src/itdelatrisu/opsu/states/MainMenu.java
+@@ -90,6 +90,31 @@ public class MainMenu extends BasicGameState {
+ 	/** Max alpha level of the menu background. */
+ 	private static final float BG_MAX_ALPHA = 0.9f;
+ 
++	/** Stable-style ribbon menu entries. */
++	private static final String[] STABLE_MENU_LABELS = {
++		"Play", "Beatmaps", "Options", "Exit"
++	};
++
++	/** Short descriptions shown on the right side of each ribbon. */
++	private static final String[] STABLE_MENU_HINTS = {
++		"pick a song", "browse & download", "tune your game", "see ya next time"
++	};
++
++	/** Length of the supplied voice and matching screen animations. */
++	private static final int WELCOME_ANIMATION_DURATION = 6400;
++	private static final int EXIT_ANIMATION_DURATION = 2800;
++	private static final int STABLE_SPECTRUM_SAMPLES = 56;
++	private static final float[] STABLE_SPECTRUM_COS = new float[STABLE_SPECTRUM_SAMPLES];
++	private static final float[] STABLE_SPECTRUM_SIN = new float[STABLE_SPECTRUM_SAMPLES];
++
++	static {
++		for (int i = 0; i < STABLE_SPECTRUM_SAMPLES; i++) {
++			float angle = (float) (Math.PI * 2d * i / STABLE_SPECTRUM_SAMPLES);
++			STABLE_SPECTRUM_COS[i] = (float) Math.cos(angle);
++			STABLE_SPECTRUM_SIN[i] = (float) Math.sin(angle);
++		}
++	}
++
+ 	/** Logo button that reveals other buttons on click. */
+ 	private MenuButton logo;
+ 
+@@ -108,6 +133,28 @@ public class MainMenu extends BasicGameState {
+ 	/** Logo button alpha levels. */
+ 	private AnimatedValue logoButtonAlpha;
+ 
++	/** Stable-style ribbon bounds and hover animation progress. */
++	private final Rectangle[] stableMenuRects = {
++		new Rectangle(), new Rectangle(), new Rectangle(), new Rectangle()
++	};
++	private final float[] stableMenuHover = new float[STABLE_MENU_LABELS.length];
++
++	/** Reused colors for the stable-style menu and spectrum. */
++	private final Color stableMenuBase = new Color(91, 54, 174, 230);
++	private final Color stableMenuAccent = new Color(145, 94, 235, 230);
++	private final Color stableMenuHoverColor = new Color(212, 126, 255, 180);
++	private final Color stableMenuText = new Color(255, 255, 255, 255);
++	private final Color stableSpectrumColor = new Color(222, 218, 255, 150);
++	private final Color stableOverlayColor = new Color(5, 11, 24, 0);
++
++	/** One-time welcome animation state. */
++	private boolean welcomePlayed;
++	private int welcomeAnimationTime = -1;
++
++	/** Delayed exit animation state. */
++	private boolean exiting;
++	private int exitAnimationTime;
++
+ 	/** Main "Play" and "Exit" buttons. */
+ 	private MenuButton playButton, exitButton;
+ 
+@@ -389,19 +436,14 @@ public class MainMenu extends BasicGameState {
+ 		// draw star fountain
+ 		starFountain.draw();
+ 
+-		// draw downloads button
+-		downloadsButton.draw();
+-
+-		// draw buttons
+-		if (logoState == LogoState.OPEN || logoState == LogoState.CLOSING) {
+-			playButton.draw();
+-			exitButton.draw();
+-		}
++		// draw the stable-style ribbons behind the logo
++		drawStableMenu(g, width, height);
+ 
+-		// draw logo (pulsing)
++		// draw the beat-reactive spectrum and logo
+ 		Float position = MusicController.getBeatProgress();
+ 		if (position == null)  // default to 60bpm
+ 			position = System.currentTimeMillis() % 1000 / 1000f;
++		drawStableSpectrum(g, width, height, position);
+ 		float scale = 1f + position * 0.05f;
+ 		logo.draw(Color.white, scale);
+ 		float ghostScale = logo.getLastScale() / scale * 1.05f;
+@@ -481,22 +523,14 @@ public class MainMenu extends BasicGameState {
+ 		userButton.setUser(UserList.get().getCurrentUser());
+ 		userButton.draw(g);
+ 
+-		// draw text
+-		float textAlpha;
+-		if (logoState == LogoState.DEFAULT)
+-			textAlpha = 0f;
+-		else if (logoState == LogoState.OPEN)
+-			textAlpha = 1f;
+-		else if (logoState == LogoState.OPENING)
+-			textAlpha = logoOpen.getEquation().calc((float) logoOpen.getTime() / logoOpen.getDuration());
+-		else //if (logoState == LogoState.CLOSING)
+-			textAlpha = 1f - logoClose.getEquation().calc(Math.min(logoClose.getTime() * 2f / logoClose.getDuration(), 1f));
++		// draw the always-visible stable-style status text
++		float textAlpha = 0.9f;
+ 		float oldWhiteAlpha = Colors.WHITE_FADE.a;
+ 		Colors.WHITE_FADE.a = textAlpha;
+ 		float marginX = UserButton.getWidth() + 8, topMarginY = 4;
+ 		Fonts.MEDIUM.drawString(marginX, topMarginY,
+-			String.format("Loaded %d sets with %d beatmaps.",
+-					BeatmapSetList.get().getMapSetCount(), BeatmapSetList.get().getMapCount()),
++			String.format("You have %d beatmaps available!",
++					BeatmapSetList.get().getMapCount()),
+ 			Colors.WHITE_FADE
+ 		);
+ 		float lineHeight = Fonts.MEDIUM.getLineHeight() * 0.925f;
+@@ -523,16 +557,43 @@ public class MainMenu extends BasicGameState {
+ 			userOverlay.render(container, g);
+ 
+ 		UI.draw(g);
++
++		// voice-synchronised welcome and exit overlays are drawn above the UI
++		drawWelcomeAndExitOverlay(g, width, height);
+ 	}
+ 
+ 	@Override
+ 	public void update(GameContainer container, StateBasedGame game, int delta)
+ 			throws SlickException {
+ 		UI.update(delta);
++		if (welcomeAnimationTime >= 0) {
++			welcomeAnimationTime += delta;
++			if (welcomeAnimationTime >= WELCOME_ANIMATION_DURATION)
++				welcomeAnimationTime = -1;
++		}
++		if (exiting) {
++			exitAnimationTime += delta;
++			if (exitAnimationTime >= EXIT_ANIMATION_DURATION)
++				container.exit();
++			return;
++		}
+ 		syncSeasonalBackgroundState();
+ 		if (MusicController.trackEnded())
+ 			nextTrack(false);  // end of track: go to next track
+ 		int mouseX = input.getMouseX(), mouseY = input.getMouseY();
++		layoutStableMenu(container.getWidth(), container.getHeight());
++		boolean stableMenuActive = !showOptionsOverlay && !showUserOverlay &&
++			(logoState == LogoState.OPEN || logoState == LogoState.OPENING);
++		for (int i = 0; i < stableMenuHover.length; i++) {
++			float target = stableMenuActive && stableMenuRects[i].contains(mouseX, mouseY) ? 1f : 0f;
++			float step = delta / 140f;
++			if (stableMenuHover[i] < target)
++				stableMenuHover[i] = Math.min(target, stableMenuHover[i] + step);
++			else if (stableMenuHover[i] > target)
++				stableMenuHover[i] = Math.max(target, stableMenuHover[i] - step);
++			if (target > 0f)
++				logoTimer = 0;
++		}
+ 		if (showOptionsOverlay || showUserOverlay) {
+ 			logo.hoverUpdate(delta, false);
+ 			playButton.hoverUpdate(delta, false);
+@@ -548,7 +609,6 @@ public class MainMenu extends BasicGameState {
+ 			updateButton.autoHoverUpdate(delta, true);
+ 			restartButton.autoHoverUpdate(delta, false);
+ 		}
+-		downloadsButton.hoverUpdate(delta, mouseX, mouseY);
+ 		// ensure only one button is in hover state at once
+ 		boolean noHoverUpdate = musicPositionBarContains(mouseX, mouseY);
+ 		boolean contains = musicPlay.contains(mouseX, mouseY);
+@@ -684,6 +744,11 @@ public class MainMenu extends BasicGameState {
+ 		float t = com.badlogic.gdx.Gdx.graphics.getWidth()/com.badlogic.gdx.Gdx.graphics.getPpiX();
+ 		System.out.println("screen size = "+t);
+ 		UI.enter();
++		if (!welcomePlayed) {
++			welcomePlayed = true;
++			welcomeAnimationTime = 0;
++			SoundController.playSound(SoundEffect.WELCOME);
++		}
+ 		seasonalBackgroundLoadAttempted = false;
+ 		syncSeasonalBackgroundState();
+ 		if (!enterNotification) {
+@@ -769,7 +834,7 @@ public class MainMenu extends BasicGameState {
+ 	@Override
+ 	public void mousePressed(int button, int x, int y) {
+ 		// check mouse button
+-		if (button == Input.MOUSE_MIDDLE_BUTTON)
++		if (button == Input.MOUSE_MIDDLE_BUTTON || exiting)
+ 			return;
+ 
+ 		if (showOptionsOverlay || !optionsOverlayProgress.isFinished() ||
+@@ -806,13 +871,6 @@ public class MainMenu extends BasicGameState {
+ 			return;
+ 		}
+ 
+-		// downloads button actions
+-		if (downloadsButton.contains(x, y)) {
+-			SoundController.playSound(SoundEffect.MENUHIT);
+-			game.enterState(Opsu.STATE_DOWNLOADSMENU, new EasedFadeOutTransition(), new FadeInTransition());
+-			return;
+-		}
+-
+ 		// repository button actions
+ 		if (repoButton != null && repoButton.contains(x, y)) {
+ 			SoundController.playSound(SoundEffect.MENUHIT);
+@@ -861,12 +919,23 @@ public class MainMenu extends BasicGameState {
+ 
+ 		// other button actions (if visible)
+ 		else if (logoState == LogoState.OPEN || logoState == LogoState.OPENING) {
+-			if (logo.contains(x, y, 0.25f) || playButton.contains(x, y, 0.25f)) {
++			layoutStableMenu(container.getWidth(), container.getHeight());
++			if (logo.contains(x, y, 0.25f) || stableMenuRects[0].contains(x, y)) {
+ 				SoundController.playSound(SoundEffect.MENUHIT);
+ 				enterSongMenu();
+ 				return;
+-			} else if (exitButton.contains(x, y, 0.25f)) {
+-				container.exit();
++			} else if (stableMenuRects[1].contains(x, y)) {
++				SoundController.playSound(SoundEffect.MENUHIT);
++				game.enterState(Opsu.STATE_DOWNLOADSMENU, new EasedFadeOutTransition(), new FadeInTransition());
++				return;
++			} else if (stableMenuRects[2].contains(x, y)) {
++				SoundController.playSound(SoundEffect.MENUHIT);
++				showOptionsOverlay = true;
++				optionsOverlayProgress.setTime(0);
++				optionsOverlay.activate();
++				return;
++			} else if (stableMenuRects[3].contains(x, y)) {
++				startExitSequence();
+ 				return;
+ 			}
+ 		}
+@@ -879,6 +948,8 @@ public class MainMenu extends BasicGameState {
+ 
+ 	@Override
+ 	public void keyPressed(int key, char c) {
++		if (exiting)
++			return;
+ 		if (UI.globalKeyPressed(key))
+ 			return;
+ 
+@@ -952,6 +1023,197 @@ public class MainMenu extends BasicGameState {
+ 		}
+ 	}
+ 
++	/** Returns the current visibility of the stable-style ribbon menu. */
++	private float getStableMenuVisibility() {
++		switch (logoState) {
++		case OPENING:
++			return Utils.clamp(
++				(float) logoOpen.getTime() / logoOpen.getDuration(), 0f, 1f
++			);
++		case OPEN:
++		case CLOSING:
++			return Utils.clamp(logoButtonAlpha.getValue(), 0f, 1f);
++		case DEFAULT:
++		default:
++			return 0f;
++		}
++	}
++
++	/** Lays out the four stable-style menu ribbons for the current screen size. */
++	private void layoutStableMenu(int width, int height) {
++		float visibility = getStableMenuVisibility();
++		float ribbonX = width * 0.47f + (1f - visibility) * width * 0.12f;
++		float ribbonWidth = Math.min(width * 0.40f, width - ribbonX - width * 0.025f);
++		float ribbonHeight = Math.max(46f, height * 0.095f);
++		float gap = Math.max(8f, height * 0.014f);
++		float firstY = height * 0.245f;
++
++		for (int i = 0; i < stableMenuRects.length; i++) {
++			float hoverOffset = stableMenuHover[i] * width * 0.009f;
++			stableMenuRects[i].set(
++				ribbonX + hoverOffset,
++				firstY + i * (ribbonHeight + gap),
++				Math.max(1f, ribbonWidth - hoverOffset),
++				ribbonHeight
++			);
++		}
++	}
++
++	/** Draws the responsive purple menu ribbons used by osu!stable. */
++	private void drawStableMenu(Graphics g, int width, int height) {
++		float visibility = getStableMenuVisibility();
++		if (visibility <= 0f)
++			return;
++
++		layoutStableMenu(width, height);
++		float oldBaseAlpha = stableMenuBase.a;
++		float oldAccentAlpha = stableMenuAccent.a;
++		float oldHoverAlpha = stableMenuHoverColor.a;
++		float oldTextAlpha = stableMenuText.a;
++		float stripWidth = Math.max(5f, width * 0.008f);
++
++		for (int i = 0; i < stableMenuRects.length; i++) {
++			Rectangle rect = stableMenuRects[i];
++			stableMenuBase.a = (0.76f + i * 0.025f) * visibility;
++			g.setColor(stableMenuBase);
++			g.fillRect(rect.getX(), rect.getY(), rect.getWidth(), rect.getHeight());
++
++			stableMenuAccent.a = 0.92f * visibility;
++			g.setColor(stableMenuAccent);
++			g.fillRect(rect.getX(), rect.getY(), stripWidth, rect.getHeight());
++			g.fillRect(
++				rect.getX() + rect.getWidth() - stripWidth * 0.65f,
++				rect.getY(), stripWidth * 0.65f, rect.getHeight()
++			);
++
++			if (stableMenuHover[i] > 0f) {
++				stableMenuHoverColor.a = 0.55f * stableMenuHover[i] * visibility;
++				g.setColor(stableMenuHoverColor);
++				g.fillRect(rect.getX(), rect.getY(), rect.getWidth(), rect.getHeight());
++			}
++
++			stableMenuText.a = visibility;
++			float labelY = rect.getY() + (rect.getHeight() - Fonts.LARGE.getLineHeight()) / 2f;
++			Fonts.LARGE.drawString(
++				rect.getX() + width * 0.028f,
++				labelY,
++				STABLE_MENU_LABELS[i],
++				stableMenuText
++			);
++
++			float hintWidth = Fonts.SMALL.getWidth(STABLE_MENU_HINTS[i]);
++			float hintY = rect.getY() + (rect.getHeight() - Fonts.SMALL.getLineHeight()) / 2f;
++			Fonts.SMALL.drawString(
++				rect.getX() + rect.getWidth() - hintWidth - width * 0.024f,
++				hintY,
++				STABLE_MENU_HINTS[i],
++				stableMenuText
++			);
++		}
++
++		stableMenuBase.a = oldBaseAlpha;
++		stableMenuAccent.a = oldAccentAlpha;
++		stableMenuHoverColor.a = oldHoverAlpha;
++		stableMenuText.a = oldTextAlpha;
++	}
++
++	/** Draws an inexpensive beat-reactive radial spectrum behind the logo. */
++	private void drawStableSpectrum(Graphics g, int width, int height, float beatProgress) {
++		float size = Math.min(width, height);
++		float centerX = logo.getX();
++		float centerY = logo.getY();
++		float innerRadius = size * 0.285f;
++		float pulse = 1f - Math.abs(beatProgress * 2f - 1f);
++		float phase = System.currentTimeMillis() % 1800L / 900f;
++		float oldAlpha = stableSpectrumColor.a;
++
++		stableSpectrumColor.a = 0.34f + pulse * 0.16f;
++		g.setColor(stableSpectrumColor);
++		g.setLineWidth(Math.max(1f, height / 540f));
++		for (int i = 0; i < STABLE_SPECTRUM_SAMPLES; i++) {
++			float wavePhase = (i * 0.381966f + phase) % 2f;
++			float wave = 1f - Math.abs(wavePhase - 1f);
++			float outerRadius = innerRadius + size * (0.018f + wave * 0.045f + pulse * 0.018f);
++			float cos = STABLE_SPECTRUM_COS[i];
++			float sin = STABLE_SPECTRUM_SIN[i];
++			g.drawLine(
++				centerX + cos * innerRadius,
++				centerY + sin * innerRadius,
++				centerX + cos * outerRadius,
++				centerY + sin * outerRadius
++			);
++		}
++		g.resetLineWidth();
++		stableSpectrumColor.a = oldAlpha;
++	}
++
++	/** Draws the voice-synchronised welcome and goodbye captions. */
++	private void drawWelcomeAndExitOverlay(Graphics g, int width, int height) {
++		float oldOverlayAlpha = stableOverlayColor.a;
++		float oldTextAlpha = stableMenuText.a;
++
++		if (welcomeAnimationTime >= 0) {
++			float intro = Utils.clamp(welcomeAnimationTime / 650f, 0f, 1f);
++			float outro = Utils.clamp(
++				(WELCOME_ANIMATION_DURATION - welcomeAnimationTime) / 900f, 0f, 1f
++			);
++			float alpha = Math.min(intro, outro);
++			stableOverlayColor.a = (1f - intro) * 0.72f;
++			g.setColor(stableOverlayColor);
++			g.fillRect(0, 0, width, height);
++			drawCenteredStableText(
++				"welcome to osu!", height * 0.77f, alpha, width
++			);
++		} else if (exiting) {
++			float progress = Utils.clamp(
++				(float) exitAnimationTime / EXIT_ANIMATION_DURATION, 0f, 1f
++			);
++			float captionIn = Utils.clamp(exitAnimationTime / 240f, 0f, 1f);
++			float captionOut = Utils.clamp(
++				(EXIT_ANIMATION_DURATION - exitAnimationTime) / 420f, 0f, 1f
++			);
++			stableOverlayColor.a = 0.16f + AnimationEquation.OUT_QUAD.calc(progress) * 0.84f;
++			g.setColor(stableOverlayColor);
++			g.fillRect(0, 0, width, height);
++			drawCenteredStableText(
++				"see ya next time!", height * 0.73f,
++				Math.min(captionIn, captionOut), width
++			);
++		}
++
++		stableOverlayColor.a = oldOverlayAlpha;
++		stableMenuText.a = oldTextAlpha;
++	}
++
++	/** Draws a stable-style XL caption centered on the screen. */
++	private void drawCenteredStableText(String text, float y, float alpha, int width) {
++		stableMenuText.a = alpha;
++		Fonts.XLARGE.drawString(
++			(width - Fonts.XLARGE.getWidth(text)) / 2f,
++			y,
++			text,
++			stableMenuText
++		);
++	}
++
++	/** Starts the supplied goodbye voice and exits after its animation completes. */
++	public void startExitSequence() {
++		if (exiting)
++			return;
++
++		exiting = true;
++		exitAnimationTime = 0;
++		welcomeAnimationTime = -1;
++		showOptionsOverlay = false;
++		optionsOverlay.deactivate();
++		showUserOverlay = false;
++		userOverlay.deactivate();
++		logoState = LogoState.DEFAULT;
++		logo.setX(container.getWidth() / 2f);
++		SoundController.stopSound(SoundEffect.WELCOME);
++		SoundController.playSound(SoundEffect.SEEYA);
++	}
++
+ 	/**
+ 	 * Returns true if the coordinates are within the music position bar bounds.
+ 	 * @param cx the x coordinate
+@@ -973,6 +1235,10 @@ public class MainMenu extends BasicGameState {
+ 		logoButtonAlpha.setTime(0);
+ 		logoTimer = 0;
+ 		logoState = LogoState.DEFAULT;
++		for (int i = 0; i < stableMenuHover.length; i++)
++			stableMenuHover[i] = 0f;
++		exiting = false;
++		exitAnimationTime = 0;
+ 
+ 		musicInfoProgress.setTime(musicInfoProgress.getDuration());
+ 		optionsOverlay.deactivate();

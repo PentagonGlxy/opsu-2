@@ -5,11 +5,11 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.view.Display;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 
-import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
 import com.badlogic.gdx.backends.android.AndroidApplication;
@@ -17,17 +17,30 @@ import com.badlogic.gdx.backends.android.AndroidApplicationConfiguration;
 import com.badlogic.gdx.files.FileHandle;
 
 import fluddokt.ex.DeviceInfo;
+import fluddokt.ex.DevicePerformance;
 import fluddokt.opsu.fake.File;
 import fluddokt.opsu.fake.GameOpsu;
 
 public class AndroidLauncher extends AndroidApplication {
 	private static final int STORAGE_PERMISSION_REQUEST = 1001;
+	private static final float BATTERY_SAVER_REFRESH_RATE = 60f;
 
 	private boolean gameInitialized;
+	private volatile boolean batterySaverEnabled = true;
+	private volatile boolean gameplayActive;
+	private volatile boolean windowHasFocus = true;
+	private int appliedDisplayModeId = -1;
+	private float appliedRefreshRate = -1f;
 
 	@Override
 	protected void onCreate (Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
+
+		// libGDX maps "external" files to Android/data/<package>/files. Tell
+		// the shared core where Android's user-visible storage root lives.
+		System.setProperty(
+				"opsu.sharedStorageRoot",
+				Environment.getExternalStorageDirectory().getAbsolutePath());
 
 		DeviceInfo.info = new DeviceInfo() {
 			@Override
@@ -48,6 +61,21 @@ public class AndroidLauncher extends AndroidApplication {
 				if (!hasLegacyStoragePermission())
 					return null;
 				return new File(new FileHandle(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)));
+			}
+
+		};
+		DevicePerformance.info = new DevicePerformance() {
+			@Override
+			public void setBatterySaverEnabled(boolean enabled) {
+				batterySaverEnabled = enabled;
+				applyPerformanceProfile();
+			}
+
+			@Override
+			public void setGameplayActive(boolean active) {
+				gameplayActive = active;
+				setScreenAwake(active);
+				applyPerformanceProfile();
 			}
 		};
 
@@ -88,7 +116,7 @@ public class AndroidLauncher extends AndroidApplication {
 
 		AndroidApplicationConfiguration config = new AndroidApplicationConfiguration();
 		config.useImmersiveMode = true;
-		config.useWakelock = true;
+		config.useWakelock = false;
 		config.useAccelerometer = false;
 		config.useCompass = false;
 		config.useGyroscope = false;
@@ -96,14 +124,36 @@ public class AndroidLauncher extends AndroidApplication {
 		config.renderUnderCutout = true;
 
 		initialize(new GameOpsu(), config);
-		requestHighestRefreshRate();
+		applyPerformanceProfile();
 	}
 
 	@Override
 	public void onWindowFocusChanged(boolean hasFocus) {
 		super.onWindowFocusChanged(hasFocus);
-		if (hasFocus)
-			requestHighestRefreshRate();
+		windowHasFocus = hasFocus;
+		if (hasFocus) {
+			applyPerformanceProfile();
+		} else {
+			appliedDisplayModeId = -1;
+			appliedRefreshRate = -1f;
+		}
+	}
+
+	@Override
+	protected void onPause() {
+		appliedDisplayModeId = -1;
+		appliedRefreshRate = -1f;
+		setScreenAwake(false);
+		super.onPause();
+	}
+
+	@Override
+	protected void onResume() {
+		super.onResume();
+		if (gameInitialized) {
+			setScreenAwake(gameplayActive);
+			applyPerformanceProfile();
+		}
 	}
 
 	@Override
@@ -114,38 +164,112 @@ public class AndroidLauncher extends AndroidApplication {
 	}
 
 	/**
-	 * Ask Android for the fastest refresh rate compatible with the current
-	 * display mode. Reflection keeps this compatible with older Android devices.
+	 * Use a balanced refresh rate outside gameplay when battery saver is enabled,
+	 * and reserve the display's fastest compatible mode for active gameplay.
 	 */
-	private void requestHighestRefreshRate() {
-		if (Build.VERSION.SDK_INT < 21)
+	private void applyPerformanceProfile() {
+		if (!gameInitialized || !windowHasFocus)
 			return;
 
-		try {
-			Object display = getWindowManager().getDefaultDisplay();
-			Method getRefreshRate = display.getClass().getMethod("getRefreshRate");
-			float currentRate = ((Number) getRefreshRate.invoke(display)).floatValue();
-			float highestRate = currentRate;
+		runOnUiThread(new Runnable() {
+			@Override
+			public void run() {
+				try {
+					applyDisplayRefreshRate();
+				} catch (Throwable ignored) {
+					// Display-mode selection is an optional optimization.
+				}
+			}
+		});
+	}
 
-			Method getSupportedRefreshRates =
-				display.getClass().getMethod("getSupportedRefreshRates");
-			float[] supportedRates =
-				(float[]) getSupportedRefreshRates.invoke(display);
-			if (supportedRates != null) {
-				for (float rate : supportedRates)
-					highestRate = Math.max(highestRate, rate);
+	private void applyDisplayRefreshRate() {
+		Display display = getWindowManager().getDefaultDisplay();
+		boolean preferHighest = gameplayActive || !batterySaverEnabled;
+		WindowManager.LayoutParams attributes = getWindow().getAttributes();
+
+		if (Build.VERSION.SDK_INT >= 23) {
+			Display.Mode currentMode = display.getMode();
+			Display.Mode bestMode = currentMode;
+			for (Display.Mode mode : display.getSupportedModes()) {
+				if (mode.getPhysicalWidth() != currentMode.getPhysicalWidth() ||
+					mode.getPhysicalHeight() != currentMode.getPhysicalHeight())
+					continue;
+
+				if (isBetterRefreshRate(
+						mode.getRefreshRate(),
+						bestMode.getRefreshRate(),
+						preferHighest))
+					bestMode = mode;
 			}
 
-			if (highestRate > currentRate) {
-				WindowManager.LayoutParams attributes = getWindow().getAttributes();
-				Field preferredRefreshRate =
-					attributes.getClass().getField("preferredRefreshRate");
-				preferredRefreshRate.setFloat(attributes, highestRate);
+			int modeId = bestMode.getModeId();
+			if (modeId != appliedDisplayModeId) {
+				attributes.preferredDisplayModeId = modeId;
+				attributes.preferredRefreshRate = bestMode.getRefreshRate();
 				getWindow().setAttributes(attributes);
+				appliedDisplayModeId = modeId;
+				appliedRefreshRate = bestMode.getRefreshRate();
 			}
-		} catch (Throwable ignored) {
-			// Refresh-rate selection is an optional optimization.
+			return;
 		}
+
+		float bestRate = display.getRefreshRate();
+		float[] supportedRates = display.getSupportedRefreshRates();
+		if (supportedRates != null) {
+			for (float rate : supportedRates) {
+				if (isBetterRefreshRate(rate, bestRate, preferHighest))
+					bestRate = rate;
+			}
+		}
+
+		if (Math.abs(bestRate - appliedRefreshRate) > 0.1f) {
+			attributes.preferredRefreshRate = bestRate;
+			getWindow().setAttributes(attributes);
+			appliedRefreshRate = bestRate;
+			appliedDisplayModeId = -1;
+		}
+	}
+
+	private boolean isBetterRefreshRate(
+		float candidate,
+		float currentBest,
+		boolean preferHighest
+	) {
+		if (preferHighest)
+			return candidate > currentBest;
+
+		float candidateDistance = Math.abs(candidate - BATTERY_SAVER_REFRESH_RATE);
+		float currentDistance = Math.abs(currentBest - BATTERY_SAVER_REFRESH_RATE);
+		if (Math.abs(candidateDistance - currentDistance) < 0.1f)
+			return candidate < currentBest;
+		return candidateDistance < currentDistance;
+	}
+
+	/**
+	 * Keep the display awake only while a beatmap is actively being played.
+	 */
+	private void setScreenAwake(final boolean awake) {
+		runOnUiThread(new Runnable() {
+			@Override
+			public void run() {
+				if (awake) {
+					getWindow().addFlags(
+						WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+				} else {
+					getWindow().clearFlags(
+						WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+				}
+			}
+		});
+	}
+
+	@Override
+	protected void onDestroy() {
+		if (gameInitialized) {
+			setScreenAwake(false);
+		}
+		super.onDestroy();
 	}
 
 	/**

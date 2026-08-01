@@ -1,0 +1,51 @@
+diff --git a/src/fluddokt/opsu/fake/GameOpsu.java b/src/fluddokt/opsu/fake/GameOpsu.java
+index 144a0c99..19192803 100644
+--- a/src/fluddokt/opsu/fake/GameOpsu.java
++++ b/src/fluddokt/opsu/fake/GameOpsu.java
+@@ -106,8 +106,11 @@ public class GameOpsu extends com.badlogic.gdx.Game {
+ 						error("SlickErrorInit", e);
+ 					}
+ 					File dataDir = Options.DATA_DIR;
++					if (!dataDir.isDirectory())
++						dataDir.mkdir();
+ 					System.out.println("dataDir :"+dataDir+" "+dataDir.isExternal()+" "+dataDir.exists());
+-					if(dataDir.isExternal()){
++					if(dataDir.isExternal() ||
++					   System.getProperty("opsu.sharedStorageRoot") != null){
+ 						File nomediafile = new File(dataDir, ".nomedia");
+ 						if(!nomediafile.exists())
+ 							new FileOutputStream(nomediafile.getIOFile()).close();
+diff --git a/src/itdelatrisu/opsu/options/Options.java b/src/itdelatrisu/opsu/options/Options.java
+index 1b963d11..15cc2bc6 100644
+--- a/src/itdelatrisu/opsu/options/Options.java
++++ b/src/itdelatrisu/opsu/options/Options.java
+@@ -106,12 +106,10 @@ public class Options {
+ 
+ 	/**
+ 	 * Directory containing user-imported seasonal menu backgrounds.
+-	 * Android's "external" libGDX location is the device's shared internal
+-	 * storage (normally /storage/emulated/0), not removable media.
++	 * On Android, DATA_DIR resolves to the device's user-visible shared
++	 * internal storage (normally /storage/emulated/0/opsu).
+ 	 */
+ 	private static final File SEASONAL_BACKGROUND_DIR =
+-			(Gdx.app.getType() == ApplicationType.Android) ?
+-			File.external("opsu/seasonalbackgrounds/") :
+ 			new File(DATA_DIR, "seasonalbackgrounds/");
+ 
+ 	/** Cached beatmap database name. */
+@@ -199,6 +197,14 @@ public class Options {
+ 	 * @return the XDG base directory, or the working directory if unavailable
+ 	 */
+ 	private static File getXDGBaseDir(String env, String fallback) {
++		if (Gdx.app != null && Gdx.app.getType() == ApplicationType.Android) {
++			String sharedStorageRoot = System.getProperty("opsu.sharedStorageRoot");
++			if (sharedStorageRoot != null && sharedStorageRoot.length() > 0) {
++				String separator = sharedStorageRoot.endsWith(File.separator) ? "" : File.separator;
++				return new File(Gdx.files.absolute(
++						sharedStorageRoot + separator + "opsu/"));
++			}
++		}
+ 		return new File("./opsu");
+ 		/*
+ 		File workingDir = Utils.isJarRunning() ?

@@ -1,0 +1,449 @@
+diff --git a/src/itdelatrisu/opsu/GameData.java b/src/itdelatrisu/opsu/GameData.java
+index 4ee04e41..7f6f5f50 100644
+--- a/src/itdelatrisu/opsu/GameData.java
++++ b/src/itdelatrisu/opsu/GameData.java
+@@ -85,6 +85,12 @@ public class GameData {
+ 	/** Time, in milliseconds, for the hit result text to fade. */
+ 	private static final int HITCIRCLE_TEXT_FADE_TIME = 833;
+ 
++	/** Time, in milliseconds, for a stable-style judgement to pop into place. */
++	private static final int STABLE_RESULT_POP_TIME = 120;
++
++	/** Delay, in milliseconds, before a stable-style judgement fades. */
++	private static final int STABLE_RESULT_FADE_DELAY = 240;
++
+ 	/** Letter grades. */
+ 	public enum Grade {
+ 		NULL (null, null),
+@@ -1082,6 +1088,12 @@ public class GameData {
+ 						hitResult.result != HIT_SLIDER30 && hitResult.result != HIT_SLIDER10) {
+ 						// TODO: add particle system
+ 						Image lighting = GameImage.LIGHTING.getImage();
++						if (Options.isStableHitObjectAnimationsEnabled()) {
++							float lightingProgress = AnimationEquation.OUT_CUBIC.calc(
++									(float) Utils.clamp(trackPosition - hitResult.time, 0, HITCIRCLE_FADE_TIME) /
++									HITCIRCLE_FADE_TIME);
++							lighting = lighting.getScaledCopy(0.82f + 0.38f * lightingProgress);
++						}
+ 						lighting.setAlpha(hitResult.alpha);
+ 						lighting.drawCentered(hitResult.x, hitResult.y, hitResult.color);
+ 					}
+@@ -1093,15 +1105,34 @@ public class GameData {
+ 					    hitResult.hitResultType == HitObjectType.SLIDER_LAST ||
+ 					    hitResult.hitResultType == HitObjectType.SPINNER ||
+ 					    (hitResult.hitResultType == HitObjectType.SLIDERTICK && Options.getSkin().getVersion() == 1))) {
+-						float scaleProgress = AnimationEquation.IN_OUT_BOUNCE.calc(
+-							(float) Utils.clamp(trackPosition - hitResult.time, 0, HITCIRCLE_TEXT_BOUNCE_TIME) / HITCIRCLE_TEXT_BOUNCE_TIME);
+-						float scale = 1f + (HITCIRCLE_TEXT_ANIM_SCALE - 1f) * scaleProgress;
+-						float fadeProgress = AnimationEquation.OUT_CUBIC.calc(
+-							(float) Utils.clamp((trackPosition - hitResult.time) - HITCIRCLE_FADE_TIME, 0, HITCIRCLE_TEXT_FADE_TIME) / HITCIRCLE_TEXT_FADE_TIME);
+-						float alpha = 1f - fadeProgress;
++						float elapsed = trackPosition - hitResult.time;
++						float scale;
++						float alpha;
++						float resultY = hitResult.y;
++						if (Options.isStableHitObjectAnimationsEnabled()) {
++							float popProgress = AnimationEquation.OUT_BACK.calc(
++									(float) Utils.clamp(elapsed, 0, STABLE_RESULT_POP_TIME) /
++									STABLE_RESULT_POP_TIME);
++							scale = 0.78f + 0.22f * popProgress;
++							float fadeProgress = AnimationEquation.OUT_QUAD.calc(
++									(float) Utils.clamp(elapsed - STABLE_RESULT_FADE_DELAY, 0,
++									HITCIRCLE_TEXT_FADE_TIME - STABLE_RESULT_FADE_DELAY) /
++									(HITCIRCLE_TEXT_FADE_TIME - STABLE_RESULT_FADE_DELAY));
++							alpha = 1f - fadeProgress;
++							resultY -= 8f * fadeProgress;
++						} else {
++							float scaleProgress = AnimationEquation.IN_OUT_BOUNCE.calc(
++								(float) Utils.clamp(elapsed, 0, HITCIRCLE_TEXT_BOUNCE_TIME) /
++								HITCIRCLE_TEXT_BOUNCE_TIME);
++							scale = 1f + (HITCIRCLE_TEXT_ANIM_SCALE - 1f) * scaleProgress;
++							float fadeProgress = AnimationEquation.OUT_CUBIC.calc(
++								(float) Utils.clamp(elapsed - HITCIRCLE_FADE_TIME, 0, HITCIRCLE_TEXT_FADE_TIME) /
++								HITCIRCLE_TEXT_FADE_TIME);
++							alpha = 1f - fadeProgress;
++						}
+ 						Image scaledHitResult = hitResults[hitResult.result].getScaledCopy(scale);
+ 						scaledHitResult.setAlpha(alpha);
+-						scaledHitResult.drawCentered(hitResult.x, hitResult.y);
++						scaledHitResult.drawCentered(hitResult.x, resultY);
+ 					}
+ 
+ 					hitResult.alpha = 1 - ((float) (trackPosition - hitResult.time) / HITRESULT_FADE_TIME);
+@@ -1145,8 +1176,10 @@ public class GameData {
+ 			hitResult.color.a = oldColorAlpha;
+ 		}
+ 
+-		// miss, don't draw an animation
+-		if (hitResult.result == HIT_MISS)
++		boolean stableAnimations = Options.isStableHitObjectAnimationsEnabled();
++
++		// The legacy renderer removes missed hit circles immediately.
++		if (hitResult.result == HIT_MISS && !stableAnimations)
+ 			return;
+ 
+ 		// not a circle?
+@@ -1154,6 +1187,8 @@ public class GameData {
+ 		    hitResult.hitResultType != HitObjectType.SLIDER_FIRST &&
+ 		    hitResult.hitResultType != HitObjectType.SLIDER_LAST)
+ 			return;
++		if (hitResult.color == null)
++			return;
+ 
+ 		// slider follow circle
+ 		if (hitResult.expand && hitResult.result != HIT_SLIDER_REPEAT && (
+@@ -1161,7 +1196,8 @@ public class GameData {
+ 		    hitResult.hitResultType == HitObjectType.SLIDER_LAST)) {
+ 			float progress = AnimationEquation.OUT_CUBIC.calc(
+ 				(float) Utils.clamp(trackPosition - hitResult.time, 0, HITCIRCLE_FADE_TIME) / HITCIRCLE_FADE_TIME);
+-			float scale = 1f - 0.2f * progress;
++			float scale = stableAnimations ?
++					0.85f + 0.35f * progress : 1f - 0.2f * progress;
+ 			float alpha = 1f - progress;
+ 			Image fc = GameImage.SLIDER_FOLLOWCIRCLE.getImage().getScaledCopy(scale);
+ 			fc.setAlpha(alpha);
+@@ -1174,9 +1210,13 @@ public class GameData {
+ 			return;
+ 
+ 		// hit circles
+-		float progress = AnimationEquation.OUT_CUBIC.calc(
++		float progress = (stableAnimations ? AnimationEquation.OUT_QUAD : AnimationEquation.OUT_CUBIC).calc(
+ 			(float) Utils.clamp(trackPosition - hitResult.time, 0, HITCIRCLE_FADE_TIME) / HITCIRCLE_FADE_TIME);
+-		float scale = (!hitResult.expand) ? 1f : 1f + (HITCIRCLE_ANIM_SCALE - 1f) * progress;
++		float scale;
++		if (hitResult.result == HIT_MISS)
++			scale = 1f - 0.06f * progress;
++		else
++			scale = (!hitResult.expand) ? 1f : 1f + (HITCIRCLE_ANIM_SCALE - 1f) * progress;
+ 		float alpha = 1f - progress;
+ 		Image scaledHitCircle = GameImage.HITCIRCLE.getImage().getScaledCopy(scale);
+ 		Image scaledHitCircleOverlay = GameImage.HITCIRCLE_OVERLAY.getImage().getScaledCopy(scale);
+diff --git a/src/itdelatrisu/opsu/objects/Circle.java b/src/itdelatrisu/opsu/objects/Circle.java
+index fd5a8c5c..4ff0f7bf 100644
+--- a/src/itdelatrisu/opsu/objects/Circle.java
++++ b/src/itdelatrisu/opsu/objects/Circle.java
+@@ -25,11 +25,13 @@ import itdelatrisu.opsu.GameData.HitObjectType;
+ import itdelatrisu.opsu.GameImage;
+ import itdelatrisu.opsu.GameMod;
+ import itdelatrisu.opsu.Utils;
++import itdelatrisu.opsu.audio.MusicController;
+ import itdelatrisu.opsu.beatmap.HitObject;
+ import itdelatrisu.opsu.objects.curves.Vec2f;
+ import itdelatrisu.opsu.options.Options;
+ import itdelatrisu.opsu.states.Game;
+ import itdelatrisu.opsu.ui.Colors;
++import itdelatrisu.opsu.ui.animations.AnimationEquation;
+ 
+ /*
+ import org.newdawn.slick.Color;
+@@ -93,13 +95,17 @@ public class Circle implements GameObject {
+ 
+ 	@Override
+ 	public void draw(Graphics g, int trackPosition) {
+-		int timeDiff = hitObject.getTime() - trackPosition;
++		float renderPosition = getRenderPosition(trackPosition);
++		float timeDiff = hitObject.getTime() - renderPosition;
+ 		final int approachTime = game.getApproachTime();
+ 		final int fadeInTime = game.getFadeInTime();
+ 		float scale = timeDiff / (float) approachTime;
+ 		float approachScale = 1 + scale * 3;
+ 		float fadeinScale = (timeDiff - approachTime + fadeInTime) / (float) fadeInTime;
+-		float alpha = Utils.clamp(1 - fadeinScale, 0, 1);
++		float appearanceProgress = Utils.clamp(1 - fadeinScale, 0, 1);
++		float alpha = appearanceProgress;
++		float objectScale = Options.isStableHitObjectAnimationsEnabled() ?
++				0.82f + 0.18f * AnimationEquation.OUT_CUBIC.calc(appearanceProgress) : 1f;
+ 
+ 		if (GameMod.HIDDEN.isActive()) {
+ 			final int hiddenDecayTime = game.getHiddenDecayTime();
+@@ -115,18 +121,38 @@ public class Circle implements GameObject {
+ 
+ 		if (timeDiff >= 0 && !GameMod.HIDDEN.isActive())
+ 			GameImage.APPROACHCIRCLE.getImage().getScaledCopy(approachScale).drawCentered(x, y, color);
+-		GameImage.HITCIRCLE.getImage().drawCentered(x, y, color);
++		Image hitCircle = GameImage.HITCIRCLE.getImage();
++		Image hitCircleOverlay = GameImage.HITCIRCLE_OVERLAY.getImage();
++		if (objectScale != 1f) {
++			hitCircle = hitCircle.getScaledCopy(objectScale);
++			hitCircleOverlay = hitCircleOverlay.getScaledCopy(objectScale);
++		}
++		hitCircle.drawCentered(x, y, color);
+ 		boolean overlayAboveNumber = Options.getSkin().isHitCircleOverlayAboveNumber();
+ 		if (!overlayAboveNumber)
+-			GameImage.HITCIRCLE_OVERLAY.getImage().drawCentered(x, y, Colors.WHITE_FADE);
++			hitCircleOverlay.drawCentered(x, y, Colors.WHITE_FADE);
+ 		data.drawSymbolNumber(hitObject.getComboNumber(), x, y,
+-				GameImage.HITCIRCLE.getImage().getWidth() * 0.40f / data.getDefaultSymbolImage(0).getHeight(), alpha);
++				GameImage.HITCIRCLE.getImage().getWidth() * 0.40f /
++				data.getDefaultSymbolImage(0).getHeight() * objectScale, alpha);
+ 		if (overlayAboveNumber)
+-			GameImage.HITCIRCLE_OVERLAY.getImage().drawCentered(x, y, Colors.WHITE_FADE);
++			hitCircleOverlay.drawCentered(x, y, Colors.WHITE_FADE);
+ 
+ 		Colors.WHITE_FADE.a = oldAlpha;
+ 	}
+ 
++	/**
++	 * Returns a sub-millisecond render position while the live audio clock and
++	 * supplied gameplay position agree. Pauses, seeks, and fail states keep the
++	 * supplied position authoritative.
++	 */
++	private float getRenderPosition(int trackPosition) {
++		if (!Options.isStableHitObjectAnimationsEnabled())
++			return trackPosition;
++		float precisePosition = MusicController.getPrecisePosition(true) - Options.getRenderOffset();
++		return (Math.abs(precisePosition - trackPosition) < 50f) ?
++				precisePosition : trackPosition;
++	}
++
+ 	/**
+ 	 * Calculates the circle hit result.
+ 	 * @param time the hit object time (difference between track time)
+@@ -178,7 +204,7 @@ public class Circle implements GameObject {
+ 				data.sendHitResult(time, GameData.HIT_300, x, y, color, comboEnd, hitObject, HitObjectType.CIRCLE, true, 0, null, false);
+ 
+ 			else  // no more points can be scored, so send a miss
+-				data.sendHitResult(trackPosition, GameData.HIT_MISS, x, y, null, comboEnd, hitObject, HitObjectType.CIRCLE, true, 0, null, false);
++				data.sendHitResult(trackPosition, GameData.HIT_MISS, x, y, color, comboEnd, hitObject, HitObjectType.CIRCLE, true, 0, null, false);
+ 			return true;
+ 		}
+ 
+@@ -212,4 +238,3 @@ public class Circle implements GameObject {
+ 	@Override
+ 	public void reset() {}
+ }
+-
+diff --git a/src/itdelatrisu/opsu/objects/Slider.java b/src/itdelatrisu/opsu/objects/Slider.java
+index cb981050..9d626b54 100644
+--- a/src/itdelatrisu/opsu/objects/Slider.java
++++ b/src/itdelatrisu/opsu/objects/Slider.java
+@@ -207,14 +207,17 @@ public class Slider implements GameObject {
+ 
+ 	@Override
+ 	public void draw(Graphics g, int trackPosition) {
+-		int timeDiff = hitObject.getTime() - trackPosition;
++		float renderPosition = getRenderPosition(trackPosition);
++		float timeDiff = hitObject.getTime() - renderPosition;
+ 		final int repeatCount = hitObject.getRepeatCount();
+ 		final int approachTime = game.getApproachTime();
+ 		final int fadeInTime = game.getFadeInTime();
+ 		float scale = timeDiff / (float) approachTime;
+ 		float approachScale = 1 + scale * 3;
+ 		float fadeinScale = (timeDiff - approachTime + fadeInTime) / (float) fadeInTime;
+-		float alpha = Utils.clamp(1 - fadeinScale, 0, 1);
++		float appearanceProgress = Utils.clamp(1 - fadeinScale, 0, 1);
++		float alpha = appearanceProgress;
++		float entranceScale = getHitObjectScale(appearanceProgress);
+ 		float decorationsAlpha = Utils.clamp(-2.0f * fadeinScale, 0, 1);
+ 		boolean overlayAboveNumber = Options.getSkin().isHitCircleOverlayAboveNumber();
+ 		float oldAlpha = Colors.WHITE_FADE.a;
+@@ -263,8 +266,14 @@ public class Slider implements GameObject {
+ 				circleColor.a = overlayColor.a = sliderAlpha * getCircleAlphaAfterRepeat(trackPosition, true);
+ 			}
+ 			Vec2f endCircPos = curve.pointAt(1f);
+-			hitCircle.drawCentered(endCircPos.x, endCircPos.y, circleColor);
+-			hitCircleOverlay.drawCentered(endCircPos.x, endCircPos.y, overlayColor);
++			float endCircleScale = entranceScale;
++			if (Options.isStableHitObjectAnimationsEnabled()) {
++				float endProgress = (currentRepeats == 0 && Options.isSliderSnaking()) ?
++						decorationsAlpha : Utils.clamp(circleColor.a / Math.max(sliderAlpha, 0.001f), 0f, 1f);
++				endCircleScale = getHitObjectScale(endProgress);
++			}
++			hitCircle.getScaledCopy(endCircleScale).drawCentered(endCircPos.x, endCircPos.y, circleColor);
++			hitCircleOverlay.getScaledCopy(endCircleScale).drawCentered(endCircPos.x, endCircPos.y, overlayColor);
+ 		}
+ 
+ 		// set first circle colors to fade in after repeats
+@@ -277,9 +286,13 @@ public class Slider implements GameObject {
+ 
+ 		// start circle, only draw if ball still has to go there
+ 		if (!sliderClickedInitial || (drawSliderCaps && currentRepeats < repeatCount - (repeatCount % 2 == 1 ? 1 : 0))) {
+-			hitCircle.drawCentered(x, y, firstCircleColor);
++			float startCircleScale = entranceScale;
++			if (sliderClickedInitial && Options.isStableHitObjectAnimationsEnabled())
++				startCircleScale = getHitObjectScale(
++						Utils.clamp(firstCircleColor.a / Math.max(sliderAlpha, 0.001f), 0f, 1f));
++			hitCircle.getScaledCopy(startCircleScale).drawCentered(x, y, firstCircleColor);
+ 			if (!overlayAboveNumber || sliderClickedInitial)
+-				hitCircleOverlay.drawCentered(x, y, startCircleOverlayColor);
++				hitCircleOverlay.getScaledCopy(startCircleScale).drawCentered(x, y, startCircleOverlayColor);
+ 		}
+ 
+ 		color.a = alpha;
+@@ -302,11 +315,12 @@ public class Slider implements GameObject {
+ 		// draw combo number and overlay if not initially clicked
+ 		if (!sliderClickedInitial) {
+ 			data.drawSymbolNumber(hitObject.getComboNumber(), x, y,
+-				hitCircle.getWidth() * 0.40f / data.getDefaultSymbolImage(0).getHeight(), alpha);
++				hitCircle.getWidth() * 0.40f / data.getDefaultSymbolImage(0).getHeight() *
++				entranceScale, alpha);
+ 
+ 			if (overlayAboveNumber) {
+ 				startCircleOverlayColor.a = sliderAlpha;
+-				hitCircleOverlay.drawCentered(x, y, startCircleOverlayColor);
++				hitCircleOverlay.getScaledCopy(entranceScale).drawCentered(x, y, startCircleOverlayColor);
+ 			}
+ 		}
+ 
+@@ -357,7 +371,6 @@ public class Slider implements GameObject {
+ 			if (trackPosition > hitObject.getTime() + sliderTimeTotal)
+ 				return;
+ 
+-			float renderPosition = getRenderPosition(trackPosition);
+ 			float rawT = getT(renderPosition, true);
+ 			float t = getT(renderPosition, false);
+ 			int repeat = Math.min(repeatCount - 1, Math.max(0, (int) Math.floor(rawT)));
+@@ -438,13 +451,23 @@ public class Slider implements GameObject {
+ 	 * The supplied position remains authoritative while paused, seeking, or failing.
+ 	 */
+ 	private float getRenderPosition(int trackPosition) {
+-		if (!Options.isSmoothSliderEnabled())
++		if (!Options.isSmoothSliderEnabled() && !Options.isStableHitObjectAnimationsEnabled())
+ 			return trackPosition;
+ 		float precisePosition = MusicController.getPrecisePosition(true) - Options.getRenderOffset();
+ 		return (Math.abs(precisePosition - trackPosition) < 50f) ?
+ 				precisePosition : trackPosition;
+ 	}
+ 
++	/**
++	 * Returns the scale used while hit objects and slider caps appear.
++	 */
++	private float getHitObjectScale(float progress) {
++		if (!Options.isStableHitObjectAnimationsEnabled())
++			return 1f;
++		return 0.82f + 0.18f * AnimationEquation.OUT_CUBIC.calc(
++				Utils.clamp(progress, 0f, 1f));
++	}
++
+ 	/**
+ 	 * Draws slider ticks.
+ 	 * @param trackPosition the track position
+diff --git a/src/itdelatrisu/opsu/options/OptionGroup.java b/src/itdelatrisu/opsu/options/OptionGroup.java
+index 8dbf15f0..f0e0e16a 100644
+--- a/src/itdelatrisu/opsu/options/OptionGroup.java
++++ b/src/itdelatrisu/opsu/options/OptionGroup.java
+@@ -140,6 +140,7 @@ public class OptionGroup {
+ 			GameOption.AVGOFFSETDISP,
+ 			GameOption.NEW_SLIDER,
+ 			GameOption.SMOOTH_SLIDERS,
++			GameOption.STABLE_HITOBJECT_ANIMATIONS,
+ 			GameOption.SLIDER_QUALITY,
+ 			GameOption.SCOREBOARD,
+ 			GameOption.DISABLE_SPINNER_UI,
+diff --git a/src/itdelatrisu/opsu/options/Options.java b/src/itdelatrisu/opsu/options/Options.java
+index 166c365f..1b963d11 100644
+--- a/src/itdelatrisu/opsu/options/Options.java
++++ b/src/itdelatrisu/opsu/options/Options.java
+@@ -47,6 +47,9 @@ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Locale;
+ import java.util.concurrent.TimeUnit;
++
++import com.badlogic.gdx.Application.ApplicationType;
++import com.badlogic.gdx.Gdx;
+ /*
+ import java.util.jar.Attributes;
+ import java.util.jar.JarFile;
+@@ -101,8 +104,15 @@ public class Options {
+ 	/** The default skin directory (unless an osu! installation is detected). */
+ 	private static final File SKIN_ROOT_DIR = new File(DATA_DIR, "Skins/");
+ 
+-	/** Directory containing user-imported seasonal menu backgrounds. */
+-	private static final File SEASONAL_BACKGROUND_DIR = new File(DATA_DIR, "seasonalbackgrounds/");
++	/**
++	 * Directory containing user-imported seasonal menu backgrounds.
++	 * Android's "external" libGDX location is the device's shared internal
++	 * storage (normally /storage/emulated/0), not removable media.
++	 */
++	private static final File SEASONAL_BACKGROUND_DIR =
++			(Gdx.app.getType() == ApplicationType.Android) ?
++			File.external("opsu/seasonalbackgrounds/") :
++			new File(DATA_DIR, "seasonalbackgrounds/");
+ 
+ 	/** Cached beatmap database name. */
+ 	public static final File BEATMAP_DB = File.local("opsu.db");
+@@ -533,7 +543,7 @@ public class Options {
+ 			}
+ 		},
+ 		DYNAMIC_BACKGROUND ("Dynamic backgrounds", "DynamicBackground", "The current beatmap background will be used as the main menu background.", true),
+-		SEASONAL_BACKGROUNDS ("Seasonal backgrounds", "SeasonalBackgrounds", "Use images from opsu/seasonalbackgrounds as rotating menu backgrounds.\nSupports PNG, JPG, JPEG, and BMP files with no image-count limit.", false),
++		SEASONAL_BACKGROUNDS ("Seasonal backgrounds", "SeasonalBackgrounds", "Use images from Internal storage/opsu/seasonalbackgrounds on Android\nas rotating menu backgrounds, with no image-count limit.", false),
+ 		LOAD_VERBOSE ("Detailed loading progress", "LoadVerbose", "Display more verbose loading progress in the splash screen.", false),
+ 		MASTER_VOLUME ("Master", "VolumeUniversal", "Global volume level.", 35, 0, 100) {
+ 			@Override
+@@ -734,6 +744,7 @@ public class Options {
+ 		},
+ 		NEW_SLIDER("Enable New Slider", "NewSlider", "Use the new Slider style.",true),
+ 		SMOOTH_SLIDERS ("Smooth slider animations", "SmoothSliders", "Use precise slider-ball movement, smoother paths, animated follow circles,\nand BPM-pulsing reverse arrows like osu!stable.", true),
++		STABLE_HITOBJECT_ANIMATIONS ("Stable hitobject animations", "StableHitObjectAnimations", "Add smooth scale-and-fade entrances, animated slider caps,\nand cleaner hit, miss, lighting, and judgement motion.", true),
+ 		
+ 		SLIDER_QUALITY ("Old Slider Quality", "SliderQuality", "Lower values for better-looking sliders (in the old slider style).", 1, 1, 7){
+ 			@Override
+@@ -1291,6 +1302,14 @@ public class Options {
+ 	 */
+ 	public static boolean isSmoothSliderEnabled() { return GameOption.SMOOTH_SLIDERS.getBooleanValue(); }
+ 
++	/**
++	 * Returns whether stable-style hit object and judgement animations are enabled.
++	 * @return true if enabled
++	 */
++	public static boolean isStableHitObjectAnimationsEnabled() {
++		return GameOption.STABLE_HITOBJECT_ANIMATIONS.getBooleanValue();
++	}
++
+ 	/**
+ 	 * Returns whether or not to use the experimental slider style.
+ 	 * @return true if enabled
+diff --git a/src/itdelatrisu/opsu/objects/Slider.java b/src/itdelatrisu/opsu/objects/Slider.java
+index 9d626b54..33df2dc6 100644
+--- a/src/itdelatrisu/opsu/objects/Slider.java
++++ b/src/itdelatrisu/opsu/objects/Slider.java
+@@ -272,8 +272,8 @@ public class Slider implements GameObject {
+ 						decorationsAlpha : Utils.clamp(circleColor.a / Math.max(sliderAlpha, 0.001f), 0f, 1f);
+ 				endCircleScale = getHitObjectScale(endProgress);
+ 			}
+-			hitCircle.getScaledCopy(endCircleScale).drawCentered(endCircPos.x, endCircPos.y, circleColor);
+-			hitCircleOverlay.getScaledCopy(endCircleScale).drawCentered(endCircPos.x, endCircPos.y, overlayColor);
++			drawHitObjectImage(hitCircle, endCircleScale, endCircPos.x, endCircPos.y, circleColor);
++			drawHitObjectImage(hitCircleOverlay, endCircleScale, endCircPos.x, endCircPos.y, overlayColor);
+ 		}
+ 
+ 		// set first circle colors to fade in after repeats
+@@ -290,9 +290,9 @@ public class Slider implements GameObject {
+ 			if (sliderClickedInitial && Options.isStableHitObjectAnimationsEnabled())
+ 				startCircleScale = getHitObjectScale(
+ 						Utils.clamp(firstCircleColor.a / Math.max(sliderAlpha, 0.001f), 0f, 1f));
+-			hitCircle.getScaledCopy(startCircleScale).drawCentered(x, y, firstCircleColor);
++			drawHitObjectImage(hitCircle, startCircleScale, x, y, firstCircleColor);
+ 			if (!overlayAboveNumber || sliderClickedInitial)
+-				hitCircleOverlay.getScaledCopy(startCircleScale).drawCentered(x, y, startCircleOverlayColor);
++				drawHitObjectImage(hitCircleOverlay, startCircleScale, x, y, startCircleOverlayColor);
+ 		}
+ 
+ 		color.a = alpha;
+@@ -320,7 +320,7 @@ public class Slider implements GameObject {
+ 
+ 			if (overlayAboveNumber) {
+ 				startCircleOverlayColor.a = sliderAlpha;
+-				hitCircleOverlay.getScaledCopy(entranceScale).drawCentered(x, y, startCircleOverlayColor);
++				drawHitObjectImage(hitCircleOverlay, entranceScale, x, y, startCircleOverlayColor);
+ 			}
+ 		}
+ 
+@@ -468,6 +468,16 @@ public class Slider implements GameObject {
+ 				Utils.clamp(progress, 0f, 1f));
+ 	}
+ 
++	/**
++	 * Draws an animated cap without copying an image after its scale settles.
++	 */
++	private void drawHitObjectImage(Image image, float scale, float x, float y, Color tint) {
++		if (scale == 1f)
++			image.drawCentered(x, y, tint);
++		else
++			image.getScaledCopy(scale).drawCentered(x, y, tint);
++	}
++
+ 	/**
+ 	 * Draws slider ticks.
+ 	 * @param trackPosition the track position

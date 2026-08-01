@@ -1,0 +1,207 @@
+diff --git a/src/itdelatrisu/opsu/downloads/servers/CheeseGullServer.java b/src/itdelatrisu/opsu/downloads/servers/CheeseGullServer.java
+new file mode 100644
+index 00000000..7a8085fb
+--- /dev/null
++++ b/src/itdelatrisu/opsu/downloads/servers/CheeseGullServer.java
+@@ -0,0 +1,145 @@
++/*
++ * opsu! - an open-source osu! client
++ * Copyright (C) 2014-2017 Jeffrey Han
++ *
++ * opsu! is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * opsu! is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with opsu!.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++package itdelatrisu.opsu.downloads.servers;
++
++import fluddokt.opsu.fake.Log;
++import itdelatrisu.opsu.ErrorHandler;
++import itdelatrisu.opsu.Utils;
++import itdelatrisu.opsu.downloads.DownloadNode;
++
++import java.io.IOException;
++import java.io.UnsupportedEncodingException;
++import java.net.MalformedURLException;
++import java.net.URL;
++import java.net.URLEncoder;
++
++import org.json.JSONArray;
++import org.json.JSONException;
++import org.json.JSONObject;
++
++/**
++ * Download server backed by a CheeseGull-compatible beatmap mirror.
++ *
++ * CheeseGull's search format is shared by modern mirrors including Mino,
++ * osu.direct, and Hinai, so one implementation keeps their pagination and
++ * metadata handling consistent.
++ */
++public class CheeseGullServer extends DownloadServer {
++	/** Maximum beatmaps displayed per page. */
++	private static final int PAGE_LIMIT = 20;
++
++	/** Server display name. */
++	private final String serverName;
++
++	/** Search endpoint without query parameters. */
++	private final String searchEndpoint;
++
++	/** Formatted download URL: {@code beatmapSetID}. */
++	private final String downloadURL;
++
++	/** Total result count from the last query. */
++	private int totalResults = -1;
++
++	/**
++	 * Constructor.
++	 * @param serverName the name shown in the downloads menu
++	 * @param searchEndpoint the CheeseGull-compatible search endpoint
++	 * @param downloadURL the formatted direct download URL
++	 */
++	public CheeseGullServer(String serverName, String searchEndpoint, String downloadURL) {
++		this.serverName = serverName;
++		this.searchEndpoint = searchEndpoint;
++		this.downloadURL = downloadURL;
++	}
++
++	@Override
++	public String getName() { return serverName; }
++
++	@Override
++	public String getDownloadURL(int beatmapSetID) {
++		return String.format(downloadURL, beatmapSetID);
++	}
++
++	@Override
++	public DownloadNode[] resultList(String query, int page, boolean rankedOnly) throws IOException {
++		DownloadNode[] nodes = null;
++		try {
++			int offset = (page - 1) * PAGE_LIMIT;
++			String search = String.format(
++				"%s?query=%s&mode=0&amount=%d&offset=%d",
++				searchEndpoint,
++				URLEncoder.encode(query, "UTF-8"),
++				PAGE_LIMIT,
++				offset
++			);
++			if (rankedOnly)
++				search += "&status=1";
++
++			JSONArray results = Utils.readJsonArrayFromUrl(new URL(search));
++			if (results == null) {
++				totalResults = -1;
++				return null;
++			}
++
++			nodes = new DownloadNode[results.length()];
++			for (int i = 0; i < nodes.length; i++) {
++				JSONObject item = results.getJSONObject(i);
++				nodes[i] = new DownloadNode(
++					item.getInt("SetID"),
++					optionalString(item, "LastUpdate", "?"),
++					item.getString("Title"),
++					optionalString(item, "TitleUnicode", null),
++					item.getString("Artist"),
++					optionalString(item, "ArtistUnicode", null),
++					item.getString("Creator")
++				);
++			}
++
++			// CheeseGull does not expose a full count. Keep the next-page
++			// button available while a complete page is returned.
++			totalResults = offset + nodes.length;
++			if (nodes.length == PAGE_LIMIT)
++				totalResults++;
++		} catch (MalformedURLException | UnsupportedEncodingException e) {
++			ErrorHandler.error(String.format(
++				"Problem loading %s result list for query '%s'.",
++				serverName, query
++			), e, true);
++		} catch (JSONException e) {
++			Log.error(e);
++		}
++		return nodes;
++	}
++
++	/**
++	 * Returns an optional JSON string without turning JSON null into "null".
++	 */
++	private String optionalString(JSONObject item, String key, String fallback) {
++		if (!item.has(key) || item.isNull(key))
++			return fallback;
++		String value = item.optString(key, fallback);
++		return (value == null || value.length() == 0) ? fallback : value;
++	}
++
++	@Override
++	public int minQueryLength() { return 0; }
++
++	@Override
++	public int totalResults() { return totalResults; }
++}
+diff --git a/src/itdelatrisu/opsu/options/Options.java b/src/itdelatrisu/opsu/options/Options.java
+index 15cc2bc6..500a37ce 100644
+--- a/src/itdelatrisu/opsu/options/Options.java
++++ b/src/itdelatrisu/opsu/options/Options.java
+@@ -140,7 +140,7 @@ public class Options {
+ 
+ 	/** The user agent to use in HTTP requests. */
+ 	public static final String USER_AGENT =
+-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/63.0.3239.132 Safari/537.36";
++		"opsu-android-revival/0.17.0-alpha1 (+https://github.com/PentagonGlxy/opsu-2)";
+ 
+ 	/** The beatmap directory. */
+ 	private static File beatmapDir;
+diff --git a/src/itdelatrisu/opsu/states/DownloadsMenu.java b/src/itdelatrisu/opsu/states/DownloadsMenu.java
+index b3cfed43..25e82016 100644
+--- a/src/itdelatrisu/opsu/states/DownloadsMenu.java
++++ b/src/itdelatrisu/opsu/states/DownloadsMenu.java
+@@ -36,11 +36,8 @@ import itdelatrisu.opsu.beatmap.OszUnpacker;
+ import itdelatrisu.opsu.downloads.Download;
+ import itdelatrisu.opsu.downloads.DownloadList;
+ import itdelatrisu.opsu.downloads.DownloadNode;
+-import itdelatrisu.opsu.downloads.servers.BloodcatServer;
++import itdelatrisu.opsu.downloads.servers.CheeseGullServer;
+ import itdelatrisu.opsu.downloads.servers.DownloadServer;
+-import itdelatrisu.opsu.downloads.servers.HexideServer;
+-import itdelatrisu.opsu.downloads.servers.MnetworkServer;
+-import itdelatrisu.opsu.downloads.servers.RippleServer;
+ import itdelatrisu.opsu.options.Options;
+ import itdelatrisu.opsu.ui.Colors;
+ import itdelatrisu.opsu.ui.DropdownMenu;
+@@ -94,10 +91,21 @@ public class DownloadsMenu extends BasicGameState {
+ 
+ 	/** Available beatmap download servers. */
+ 	private static final DownloadServer[] SERVERS = {
+-		new RippleServer(),
+-		new MnetworkServer(),
+-		new HexideServer(),
+-		new BloodcatServer(),
++		new CheeseGullServer(
++			"Mino",
++			"https://catboy.best/api/search",
++			"https://catboy.best/d/%d"
++		),
++		new CheeseGullServer(
++			"osu.direct",
++			"https://osu.direct/api/search",
++			"https://osu.direct/d/%d"
++		),
++		new CheeseGullServer(
++			"Hinai",
++			"https://mirror.hinamizawa.ai/api/v1/hinai/search",
++			"https://mirror.hinamizawa.ai/api/v1/hinai/d/%d"
++		),
+ 	};
+ 
+ 	/** The current list of search results. */

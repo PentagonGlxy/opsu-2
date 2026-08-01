@@ -1,0 +1,60 @@
+diff --git a/src/itdelatrisu/opsu/audio/SoundController.java b/src/itdelatrisu/opsu/audio/SoundController.java
+index 87463a20..23a35404 100644
+--- a/src/itdelatrisu/opsu/audio/SoundController.java
++++ b/src/itdelatrisu/opsu/audio/SoundController.java
+@@ -356,7 +356,7 @@ public class SoundController {
+ 	 * @param additionSampleSet the 'addition' sample set
+ 	 */
+ 	public static void playHitSound(byte hitSound, byte sampleSet, byte additionSampleSet) {
+-		if (hitSound < 0)
++		if (hitSound < 0 || !Options.isBeatmapSoundEnabled())
+ 			return;
+ 
+ 		float volume = Options.getHitSoundVolume() * sampleVolumeMultiplier * Options.getMasterVolume();
+@@ -385,6 +385,8 @@ public class SoundController {
+ 	 * @param s the hit sound
+ 	 */
+ 	public static void playHitSound(SoundComponent s) {
++		if (!Options.isBeatmapSoundEnabled())
++			return;
+ 		playClip(s.getClip(), Options.getHitSoundVolume() * sampleVolumeMultiplier * Options.getMasterVolume(), null);
+ 	}
+ 
+diff --git a/src/itdelatrisu/opsu/options/OptionGroup.java b/src/itdelatrisu/opsu/options/OptionGroup.java
+index 18d8378d..ec1c5d9b 100644
+--- a/src/itdelatrisu/opsu/options/OptionGroup.java
++++ b/src/itdelatrisu/opsu/options/OptionGroup.java
+@@ -90,6 +90,7 @@ public class OptionGroup {
+ 			GameOption.MUSIC_VOLUME,
+ 			GameOption.EFFECT_VOLUME,
+ 			GameOption.HITSOUND_VOLUME,
++			GameOption.BEATMAP_SOUNDS,
+ 			GameOption.DISABLE_GAMEPLAY_SOUNDS,
+ 			GameOption.DISABLE_SOUNDS,
+ 		}),
+diff --git a/src/itdelatrisu/opsu/options/Options.java b/src/itdelatrisu/opsu/options/Options.java
+index 5be69866..2558eafe 100644
+--- a/src/itdelatrisu/opsu/options/Options.java
++++ b/src/itdelatrisu/opsu/options/Options.java
+@@ -547,7 +547,8 @@ public class Options {
+ 		},
+ 		EFFECT_VOLUME ("Effects", "VolumeEffect", "Menu and game sound effects volume.", 70, 0, 100),
+ 		HITSOUND_VOLUME ("Hit sounds", "VolumeHitSound", "Hit sounds volume.", 30, 0, 100),
++		BEATMAP_SOUNDS ("Beatmap sounds", "BeatmapSounds", "Play hit sounds and slider sounds defined by beatmaps.", true),
+ 		MUSIC_OFFSET ("Universal offset", "Offset", "Adjust this value if hit objects are out of sync.", 0, -2000, 500) {
+ 			@Override
+ 			public String getValueString() { return String.format("%dms", val); }
+ 		},
+@@ -1119,6 +1120,12 @@ public class Options {
+ 	 */
+ 	public static float getHitSoundVolume() { return GameOption.HITSOUND_VOLUME.getIntegerValue() / 100f; }
+ 
++	/**
++	 * Returns whether beatmap hit sounds are enabled.
++	 * @return true if enabled
++	 */
++	public static boolean isBeatmapSoundEnabled() { return GameOption.BEATMAP_SOUNDS.getBooleanValue(); }
++
+ 	/**
+ 	 * Returns the music offset time.
+ 	 * @return the offset (in milliseconds)

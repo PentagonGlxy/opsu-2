@@ -1,0 +1,400 @@
+diff --git a/src/itdelatrisu/opsu/audio/HitSound.java b/src/itdelatrisu/opsu/audio/HitSound.java
+--- a/src/itdelatrisu/opsu/audio/HitSound.java
++++ b/src/itdelatrisu/opsu/audio/HitSound.java
+@@ -75,6 +75,9 @@
+ 	/** Current sample set. */
+ 	private static SampleSet currentSampleSet;
+ 
++	/** Beatmap-wide default sample set. */
++	private static SampleSet beatmapDefaultSampleSet = SampleSet.NORMAL;
++
+ 	/** Current default sample set. */
+ 	private static SampleSet currentDefaultSampleSet = SampleSet.NORMAL;
+ 
+@@ -127,13 +130,14 @@
+ 	 * @param sampleSet the sample set ("auto", "Normal", "Soft", "Drum")
+ 	 */
+ 	public static void setDefaultSampleSet(String sampleSet) {
+-		currentDefaultSampleSet = SampleSet.NORMAL;
++		beatmapDefaultSampleSet = SampleSet.NORMAL;
+ 		for (SampleSet ss : SampleSet.values()) {
+ 			if (sampleSet.equalsIgnoreCase(ss.getName())) {
+-				currentDefaultSampleSet = ss;
+-				return;
++				beatmapDefaultSampleSet = ss;
++				break;
+ 			}
+ 		}
++		currentDefaultSampleSet = beatmapDefaultSampleSet;
+ 	}
+ 
+ 	/**
+@@ -141,7 +145,7 @@
+ 	 * @param sampleType the sample set (0:auto, 1:normal, 2:soft, 3:drum)
+ 	 */
+ 	public static void setDefaultSampleSet(byte sampleType) {
+-		currentDefaultSampleSet = SampleSet.NORMAL;
++		currentDefaultSampleSet = beatmapDefaultSampleSet;
+ 		for (SampleSet ss : SampleSet.values()) {
+ 			if (sampleType == ss.getIndex()) {
+ 				currentDefaultSampleSet = ss;
+@@ -151,16 +155,23 @@
+ 	}
+ 
+ 	/**
+-	 * Sets the sample set to use when playing hit sounds.
++	 * Returns the sample set represented by the given sample type.
+ 	 * @param sampleType the sample set (0:auto, 1:normal, 2:soft, 3:drum)
++	 * @return the selected sample set, or the current default for "auto"
+ 	 */
+-	public static void setSampleSet(byte sampleType) {
+-		currentSampleSet = currentDefaultSampleSet;
++	public static SampleSet getSampleSet(byte sampleType) {
+ 		for (SampleSet ss : SampleSet.values()) {
+-			if (sampleType == ss.getIndex()) {
+-				currentSampleSet = ss;
+-				return;
+-			}
++			if (sampleType == ss.getIndex())
++				return ss;
+ 		}
++		return currentDefaultSampleSet;
++	}
++
++	/**
++	 * Sets the sample set to use when playing hit sounds.
++	 * @param sampleType the sample set (0:auto, 1:normal, 2:soft, 3:drum)
++	 */
++	public static void setSampleSet(byte sampleType) {
++		currentSampleSet = getSampleSet(sampleType);
+ 	}
+ }
+diff --git a/src/itdelatrisu/opsu/audio/SoundController.java b/src/itdelatrisu/opsu/audio/SoundController.java
+--- a/src/itdelatrisu/opsu/audio/SoundController.java
++++ b/src/itdelatrisu/opsu/audio/SoundController.java
+@@ -37,6 +37,11 @@
+ import java.io.InputStream;
+ */
+ import java.net.URL;
++import java.util.HashMap;
++import java.util.HashSet;
++import java.util.Locale;
++import java.util.Map;
++import java.util.Set;
+ 
+ /*
+ import javax.sound.sampled.AudioFormat;
+@@ -75,6 +80,21 @@
+ 	/** Sample volume multiplier, from timing points [0, 1]. */
+ 	private static float sampleVolumeMultiplier = 1f;
+ 
++	/** Custom sample index from the active timing point. */
++	private static byte customSampleIndex;
++
++	/** Directory containing the active beatmap and its custom hit sounds. */
++	private static File beatmapSoundDirectory;
++
++	/** Custom beatmap hit sounds, loaded on demand and cached by lowercase filename. */
++	private static final Map<String, MultiClip> beatmapSoundClips = new HashMap<String, MultiClip>();
++
++	/** Custom beatmap hit sound filenames that were not found. */
++	private static final Set<String> missingBeatmapSounds = new HashSet<String>();
++
++	/** Supported custom hit sound file extensions, in lookup order. */
++	private static final String[] BEATMAP_SOUND_EXTENSIONS = { ".wav", ".mp3", ".ogg" };
++
+ 	/** Whether all sounds are muted. */
+ 	private static boolean isMuted;
+ 
+@@ -314,6 +334,123 @@
+ 	}
+ 
+ 	/**
++	 * Sets the custom sample index from the active timing point.
++	 * @param index the custom sample index
++	 */
++	public static void setCustomSampleIndex(byte index) {
++		customSampleIndex = index;
++	}
++
++	/**
++	 * Sets the directory used to resolve custom beatmap hit sounds.
++	 * Previously loaded beatmap sounds are released when the directory changes.
++	 * @param directory the beatmap directory
++	 */
++	public static void setBeatmapSoundDirectory(File directory) {
++		clearBeatmapSounds();
++		beatmapSoundDirectory = directory;
++		customSampleIndex = 0;
++	}
++
++	/** Releases all custom sounds loaded for the previous beatmap. */
++	private static void clearBeatmapSounds() {
++		for (MultiClip clip : beatmapSoundClips.values())
++			clip.destroy();
++		beatmapSoundClips.clear();
++		missingBeatmapSounds.clear();
++	}
++
++	/**
++	 * Finds a custom sound in the beatmap directory.
++	 * The case-insensitive fallback keeps beatmaps authored on Windows working on Android.
++	 */
++	private static File findBeatmapSound(String filename) {
++		if (beatmapSoundDirectory == null || !beatmapSoundDirectory.isDirectory())
++			return null;
++
++		File exact = new File(beatmapSoundDirectory, filename);
++		if (exact.isFile())
++			return exact;
++
++		File[] files = beatmapSoundDirectory.listFiles();
++		if (files != null) {
++			for (File file : files) {
++				if (file.isFile() && file.getName().equalsIgnoreCase(filename))
++					return file;
++			}
++		}
++		return null;
++	}
++
++	/** Returns a cached custom beatmap sound, loading it on first use. */
++	private static MultiClip getBeatmapSound(String filename) {
++		if (!Options.isCustomBeatmapSoundEnabled() || filename == null)
++			return null;
++
++		filename = filename.trim();
++		if (filename.length() == 0 || filename.contains("/") || filename.contains("\\"))
++			return null;
++
++		String key = filename.toLowerCase(Locale.ROOT);
++		MultiClip clip = beatmapSoundClips.get(key);
++		if (clip != null)
++			return clip;
++		if (missingBeatmapSounds.contains(key))
++			return null;
++
++		File file = findBeatmapSound(filename);
++		if (file == null) {
++			missingBeatmapSounds.add(key);
++			return null;
++		}
++
++		clip = loadClip(file.getAbsolutePath());
++		beatmapSoundClips.put(key, clip);
++		return clip;
++	}
++
++	/** Returns whether a filename has a supported custom hit sound extension. */
++	private static boolean isSupportedBeatmapSound(String filename) {
++		String lower = filename.toLowerCase(Locale.ROOT);
++		for (String extension : BEATMAP_SOUND_EXTENSIONS) {
++			if (lower.endsWith(extension))
++				return true;
++		}
++		return false;
++	}
++
++	/** Returns a custom indexed beatmap sound, or null if the skin/default sound should be used. */
++	private static MultiClip getIndexedBeatmapSound(HitSound sound, SampleSet sampleSet, byte objectSampleIndex) {
++		int index = (objectSampleIndex > 0) ? objectSampleIndex : customSampleIndex;
++		if (index <= 0)
++			return null;
++
++		String suffix = (index > 1) ? Integer.toString(index) : "";
++		String basename = String.format("%s-%s%s", sampleSet.getName(), sound.getFileName(), suffix);
++		for (String extension : BEATMAP_SOUND_EXTENSIONS) {
++			MultiClip clip = getBeatmapSound(basename + extension);
++			if (clip != null)
++				return clip;
++		}
++		return null;
++	}
++
++	/** Returns the playback volume, honoring a hit object's optional volume override. */
++	private static float getHitSoundVolume(int objectVolume) {
++		float sampleVolume = (objectVolume > 0 && objectVolume <= 100) ?
++				objectVolume / 100f : sampleVolumeMultiplier;
++		return Options.getHitSoundVolume() * sampleVolume * Options.getMasterVolume();
++	}
++
++	/** Plays an indexed beatmap sound when available, otherwise its skin/default equivalent. */
++	private static void playHitSound(HitSound sound, SampleSet sampleSet, byte objectSampleIndex, float volume) {
++		MultiClip clip = getIndexedBeatmapSound(sound, sampleSet, objectSampleIndex);
++		if (clip == null)
++			clip = sound.getClip(sampleSet);
++		playClip(clip, volume, null);
++	}
++
++	/**
+ 	 * Plays a sound clip.
+ 	 * @param clip the Clip to play
+ 	 * @param volume the volume [0, 1]
+@@ -356,31 +493,67 @@
+ 	 * @param additionSampleSet the 'addition' sample set
+ 	 */
+ 	public static void playHitSound(byte hitSound, byte sampleSet, byte additionSampleSet) {
++		playHitSound(hitSound, sampleSet, additionSampleSet, (byte) 0, 0, null);
++	}
++
++	/**
++	 * Plays hit sound(s) using a HitObject bitmask and its custom sample metadata.
++	 * @param hitSound the hit sound (bitmask)
++	 * @param sampleSet the normal sample set
++	 * @param additionSampleSet the whistle/finish/clap sample set
++	 * @param objectSampleIndex the custom sample index, or 0 to use the timing point
++	 * @param objectVolume the custom sample volume [1, 100], or 0 to use the timing point
++	 * @param customFilename the custom addition filename, or an empty string
++	 */
++	public static void playHitSound(
++			byte hitSound, byte sampleSet, byte additionSampleSet,
++			byte objectSampleIndex, int objectVolume, String customFilename) {
+ 		if (hitSound < 0 || !Options.isBeatmapSoundEnabled())
+ 			return;
+ 
+-		float volume = Options.getHitSoundVolume() * sampleVolumeMultiplier * Options.getMasterVolume();
++		float volume = getHitSoundVolume(objectVolume);
+ 		if (volume == 0f)
+ 			return;
+ 
++		SampleSet normalSet = HitSound.getSampleSet(sampleSet);
++		SampleSet additionSet = (additionSampleSet == 0) ?
++				normalSet : HitSound.getSampleSet(additionSampleSet);
++
+ 		// play all sounds
+-		if (hitSound == HitObject.SOUND_NORMAL || Options.getSkin().isLayeredHitSounds()) {
+-			HitSound.setSampleSet(sampleSet);
+-			playClip(HitSound.NORMAL.getClip(), volume, null);
+-		}
++		if (hitSound == HitObject.SOUND_NORMAL || Options.getSkin().isLayeredHitSounds())
++			playHitSound(HitSound.NORMAL, normalSet, objectSampleIndex, volume);
+ 
+-		if (hitSound != HitObject.SOUND_NORMAL) {
+-			HitSound.setSampleSet(additionSampleSet);
++		String filename = (customFilename == null) ? "" : customFilename.trim();
++		if (Options.isCustomBeatmapSoundEnabled() && filename.length() > 0) {
++			if (isSupportedBeatmapSound(filename))
++				playClip(getBeatmapSound(filename), volume, null);
++		} else if (hitSound != HitObject.SOUND_NORMAL) {
+ 			if ((hitSound & HitObject.SOUND_WHISTLE) > 0)
+-				playClip(HitSound.WHISTLE.getClip(), volume, null);
++				playHitSound(HitSound.WHISTLE, additionSet, objectSampleIndex, volume);
+ 			if ((hitSound & HitObject.SOUND_FINISH) > 0)
+-				playClip(HitSound.FINISH.getClip(), volume, null);
++				playHitSound(HitSound.FINISH, additionSet, objectSampleIndex, volume);
+ 			if ((hitSound & HitObject.SOUND_CLAP) > 0)
+-				playClip(HitSound.CLAP.getClip(), volume, null);
++				playHitSound(HitSound.CLAP, additionSet, objectSampleIndex, volume);
+ 		}
+ 	}
+ 
+ 	/**
++	 * Plays a single indexed hit sound, such as a slider tick.
++	 * @param sound the hit sound
++	 * @param sampleSet the normal sample set
++	 * @param objectSampleIndex the custom sample index, or 0 to use the timing point
++	 * @param objectVolume the custom sample volume [1, 100], or 0 to use the timing point
++	 */
++	public static void playHitSound(
++			HitSound sound, byte sampleSet, byte objectSampleIndex, int objectVolume) {
++		if (!Options.isBeatmapSoundEnabled())
++			return;
++		float volume = getHitSoundVolume(objectVolume);
++		if (volume > 0f)
++			playHitSound(sound, HitSound.getSampleSet(sampleSet), objectSampleIndex, volume);
++	}
++
++	/**
+ 	 * Plays a hit sound.
+ 	 * @param s the hit sound
+ 	 */
+diff --git a/src/itdelatrisu/opsu/GameData.java b/src/itdelatrisu/opsu/GameData.java
+--- a/src/itdelatrisu/opsu/GameData.java
++++ b/src/itdelatrisu/opsu/GameData.java
+@@ -1489,11 +1489,18 @@
+ 			SoundController.playHitSound(
+ 					hitObject.getEdgeHitSoundType(repeat),
+ 					hitObject.getSampleSet(repeat),
+-					hitObject.getAdditionSampleSet(repeat));
++					hitObject.getAdditionSampleSet(repeat),
++					hitObject.getCustomSampleIndex(),
++					hitObject.getHitSoundVolume(),
++					hitObject.getHitSoundFile());
+ 			break;
+ 		case HIT_SLIDER10:
+ 			hitValue = 10;
+-			SoundController.playHitSound(HitSound.SLIDERTICK);
++			SoundController.playHitSound(
++					HitSound.SLIDERTICK,
++					hitObject.getSampleSet(repeat),
++					hitObject.getCustomSampleIndex(),
++					hitObject.getHitSoundVolume());
+ 			break;
+ 		case HIT_MISS:
+ 			resetComboStreak();
+@@ -1637,7 +1644,10 @@
+ 			SoundController.playHitSound(
+ 					hitObject.getEdgeHitSoundType(repeat),
+ 					hitObject.getSampleSet(repeat),
+-					hitObject.getAdditionSampleSet(repeat));
++					hitObject.getAdditionSampleSet(repeat),
++					hitObject.getCustomSampleIndex(),
++					hitObject.getHitSoundVolume(),
++					hitObject.getHitSoundFile());
+ 
+ 			// calculate score and increment combo streak
+ 			changeScore(getScoreForHit(hitValue, hitObject));
+diff --git a/src/itdelatrisu/opsu/states/Game.java b/src/itdelatrisu/opsu/states/Game.java
+--- a/src/itdelatrisu/opsu/states/Game.java
++++ b/src/itdelatrisu/opsu/states/Game.java
+@@ -1956,6 +1956,7 @@
+ 			BeatmapDB.load(beatmap, BeatmapDB.LOAD_ARRAY);
+ 		BeatmapParser.parseHitObjects(beatmap);
+ 		HitSound.setDefaultSampleSet(beatmap.sampleSet);
++		SoundController.setBeatmapSoundDirectory(beatmap.getFile().getParentFile());
+ 
+ 		Utils.gc(true);
+ 	}
+@@ -2218,6 +2219,7 @@
+ 			beatLength = beatLengthBase * timingPoint.getSliderMultiplier();
+ 		if (setSampleSet) {
+ 			HitSound.setDefaultSampleSet(timingPoint.getSampleType());
++			SoundController.setCustomSampleIndex(timingPoint.getSampleTypeCustom());
+ 			SoundController.setSampleVolume(timingPoint.getSampleVolume());
+ 		}
+ 	}
+diff --git a/src/itdelatrisu/opsu/options/Options.java b/src/itdelatrisu/opsu/options/Options.java
+--- a/src/itdelatrisu/opsu/options/Options.java
++++ b/src/itdelatrisu/opsu/options/Options.java
+@@ -552,6 +552,7 @@
+ 		EFFECT_VOLUME ("Effects", "VolumeEffect", "Menu and game sound effects volume.", 70, 0, 100),
+ 		HITSOUND_VOLUME ("Hit sounds", "VolumeHitSound", "Hit sounds volume.", 30, 0, 100),
+ 		BEATMAP_SOUNDS ("Beatmap sounds", "BeatmapSounds", "Play hit sounds and slider sounds defined by beatmaps.", true),
++		CUSTOM_BEATMAP_SOUNDS ("Custom beatmap sounds", "CustomBeatmapSounds", "Load custom hit sound files from the current beatmap folder.\nRequires Beatmap sounds to be enabled.", true),
+ 		MUSIC_OFFSET ("Universal offset", "Offset", "Adjust this value if hit objects are out of sync.", 0, -2000, 500) {
+ 			@Override
+ 			public String getValueString() { return String.format("%dms", val); }
+@@ -1131,6 +1132,12 @@
+ 	public static boolean isBeatmapSoundEnabled() { return GameOption.BEATMAP_SOUNDS.getBooleanValue(); }
+ 
+ 	/**
++	 * Returns whether custom beatmap hit sound files are enabled.
++	 * @return true if enabled
++	 */
++	public static boolean isCustomBeatmapSoundEnabled() { return GameOption.CUSTOM_BEATMAP_SOUNDS.getBooleanValue(); }
++
++	/**
+ 	 * Returns the music offset time.
+ 	 * @return the offset (in milliseconds)
+ 	 */
+diff --git a/src/itdelatrisu/opsu/options/OptionGroup.java b/src/itdelatrisu/opsu/options/OptionGroup.java
+--- a/src/itdelatrisu/opsu/options/OptionGroup.java
++++ b/src/itdelatrisu/opsu/options/OptionGroup.java
+@@ -92,6 +92,7 @@
+ 			GameOption.EFFECT_VOLUME,
+ 			GameOption.HITSOUND_VOLUME,
+ 			GameOption.BEATMAP_SOUNDS,
++			GameOption.CUSTOM_BEATMAP_SOUNDS,
+ 			GameOption.DISABLE_GAMEPLAY_SOUNDS,
+ 			GameOption.DISABLE_SOUNDS,
+ 		}),

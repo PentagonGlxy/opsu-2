@@ -1,0 +1,284 @@
+diff --git a/src/itdelatrisu/opsu/options/OptionGroup.java b/src/itdelatrisu/opsu/options/OptionGroup.java
+--- a/src/itdelatrisu/opsu/options/OptionGroup.java
++++ b/src/itdelatrisu/opsu/options/OptionGroup.java
+@@ -73,6 +73,7 @@ public class OptionGroup {
+ 		}),
+ 		new OptionGroup("MAIN MENU", new GameOption[] {
+ 			GameOption.DYNAMIC_BACKGROUND,
++			GameOption.SEASONAL_BACKGROUNDS,
+ 			GameOption.PARALLAX,
+ 			GameOption.ENABLE_THEME_SONG,
+ 		}),
+diff --git a/src/itdelatrisu/opsu/options/Options.java b/src/itdelatrisu/opsu/options/Options.java
+--- a/src/itdelatrisu/opsu/options/Options.java
++++ b/src/itdelatrisu/opsu/options/Options.java
+@@ -101,6 +101,9 @@ public class Options {
+ 	/** The default skin directory (unless an osu! installation is detected). */
+ 	private static final File SKIN_ROOT_DIR = new File(DATA_DIR, "Skins/");
+ 
++	/** Directory containing user-imported seasonal menu backgrounds. */
++	private static final File SEASONAL_BACKGROUND_DIR = new File(DATA_DIR, "seasonalbackgrounds/");
++
+ 	/** Cached beatmap database name. */
+ 	public static final File BEATMAP_DB = File.local("opsu.db");
+ 	public static final File O_BEATMAP_DB = new File(DATA_DIR, ".opsu.db");
+@@ -533,6 +536,7 @@ public class Options {
+ 			}
+ 		},
+ 		DYNAMIC_BACKGROUND ("Dynamic backgrounds", "DynamicBackground", "The current beatmap background will be used as the main menu background.", true),
++		SEASONAL_BACKGROUNDS ("Seasonal backgrounds", "SeasonalBackgrounds", "Use images from opsu/seasonalbackgrounds as rotating menu backgrounds.\nSupports PNG, JPG, JPEG, and BMP files with no image-count limit.", false),
+ 		LOAD_VERBOSE ("Detailed loading progress", "LoadVerbose", "Display more verbose loading progress in the splash screen.", false),
+ 		MASTER_VOLUME ("Master", "VolumeUniversal", "Global volume level.", 35, 0, 100) {
+ 			@Override
+@@ -1223,6 +1227,12 @@ public class Options {
+ 	 */
+ 	public static boolean isDynamicBackgroundEnabled() { return GameOption.DYNAMIC_BACKGROUND.getBooleanValue(); }
+ 
++	/**
++	 * Returns whether user-imported seasonal menu backgrounds are enabled.
++	 * @return true if enabled
++	 */
++	public static boolean areSeasonalBackgroundsEnabled() { return GameOption.SEASONAL_BACKGROUNDS.getBooleanValue(); }
++
+ 	/**
+ 	 * Returns whether or not to show perfect hit result bursts.
+ 	 * @return true if enabled
+@@ -1553,6 +1563,17 @@ public class Options {
+ 		return importDir;
+ 	}
+ 
++	/**
++	 * Returns the directory containing user-imported seasonal menu backgrounds.
++	 * If it does not exist, this creates an "opsu/seasonalbackgrounds" directory.
++	 * @return the seasonal background directory
++	 */
++	public static File getSeasonalBackgroundDir() {
++		if (!SEASONAL_BACKGROUND_DIR.isDirectory() && !SEASONAL_BACKGROUND_DIR.mkdir())
++			ErrorHandler.error(String.format("Failed to create seasonal background directory at '%s'.", SEASONAL_BACKGROUND_DIR.getAbsolutePath()), null, false);
++		return SEASONAL_BACKGROUND_DIR;
++	}
++
+ 	/**
+ 	 * Returns the screenshot directory.
+ 	 * If invalid, this will return a "Screenshot" directory.
+diff --git a/src/itdelatrisu/opsu/states/MainMenu.java b/src/itdelatrisu/opsu/states/MainMenu.java
+--- a/src/itdelatrisu/opsu/states/MainMenu.java
++++ b/src/itdelatrisu/opsu/states/MainMenu.java
+@@ -57,7 +57,10 @@ import java.awt.Desktop;
+ */
+ import java.io.IOException;
+ import java.text.SimpleDateFormat;
++import java.util.ArrayList;
+ import java.util.Date;
++import java.util.List;
++import java.util.Locale;
+ import java.util.Stack;
+ 
+ import com.badlogic.gdx.math.Rectangle;
+@@ -129,6 +132,18 @@ public class MainMenu extends BasicGameState {
+ 	/** Background alpha level (for fade-in effect). */
+ 	private AnimatedValue bgAlpha = new AnimatedValue(1100, 0f, BG_MAX_ALPHA, AnimationEquation.LINEAR);
+ 
++	/** Current user-imported seasonal menu background. */
++	private Image seasonalBackground;
++
++	/** File backing the current seasonal menu background. */
++	private File seasonalBackgroundFile;
++
++	/** Last observed seasonal background option state. */
++	private boolean seasonalBackgroundsEnabled;
++
++	/** Whether the seasonal background directory has been scanned for the current menu visit. */
++	private boolean seasonalBackgroundLoadAttempted;
++
+ 	/** Whether or not a notification was already sent upon entering. */
+ 	private boolean enterNotification = false;
+ 
+@@ -196,6 +211,7 @@ public class MainMenu extends BasicGameState {
+ 
+ 		programStartTime = System.currentTimeMillis();
+ 		previous = new Stack<Integer>();
++		Options.getSeasonalBackgroundDir();
+ 
+ 		int width = container.getWidth();
+ 		int height = container.getHeight();
+@@ -348,7 +364,9 @@ public class MainMenu extends BasicGameState {
+ 			parallaxX = -offset / 2f * (mouseX - width / 2) / (width / 2);
+ 			parallaxY = -offset / 2f * (mouseY - height / 2) / (height / 2);
+ 		}
+-		if (Options.isDynamicBackgroundEnabled() && beatmap != null &&
++		if (drawSeasonalBackground(width, height, parallaxX, parallaxY, bgAlpha.getValue()))
++			;
++		else if (Options.isDynamicBackgroundEnabled() && beatmap != null &&
+ 			beatmap.drawBackground(width, height, parallaxX, parallaxY, bgAlpha.getValue(), true))
+ 			;
+ 		else {
+@@ -511,6 +529,7 @@ public class MainMenu extends BasicGameState {
+ 	public void update(GameContainer container, StateBasedGame game, int delta)
+ 			throws SlickException {
+ 		UI.update(delta);
++		syncSeasonalBackgroundState();
+ 		if (MusicController.trackEnded())
+ 			nextTrack(false);  // end of track: go to next track
+ 		int mouseX = input.getMouseX(), mouseY = input.getMouseY();
+@@ -554,7 +573,8 @@ public class MainMenu extends BasicGameState {
+ 
+ 		// fade in background
+ 		Beatmap beatmap = MusicController.getBeatmap();
+-		if (!(Options.isDynamicBackgroundEnabled() && beatmap != null && beatmap.isBackgroundLoading()))
++		if (seasonalBackground != null ||
++		    !(Options.isDynamicBackgroundEnabled() && beatmap != null && beatmap.isBackgroundLoading()))
+ 			bgAlpha.update(delta);
+ 
+ 		// check measure progress
+@@ -664,6 +684,8 @@ public class MainMenu extends BasicGameState {
+ 		float t = com.badlogic.gdx.Gdx.graphics.getWidth()/com.badlogic.gdx.Gdx.graphics.getPpiX();
+ 		System.out.println("screen size = "+t);
+ 		UI.enter();
++		seasonalBackgroundLoadAttempted = false;
++		syncSeasonalBackgroundState();
+ 		if (!enterNotification) {
+ 			if (Updater.get().getStatus() == Updater.Status.UPDATE_AVAILABLE) {
+ 				UI.getNotificationManager().sendNotification("A new update is available!", Colors.GREEN);
+@@ -733,6 +755,8 @@ public class MainMenu extends BasicGameState {
+ 			throws SlickException {
+ 		if (MusicController.isTrackDimmed())
+ 			MusicController.toggleTrackDimmed(1f);
++		releaseSeasonalBackground();
++		seasonalBackgroundLoadAttempted = false;
+ 
+ 		// reset overlays
+ 		optionsOverlay.deactivate();
+@@ -1006,7 +1030,9 @@ public class MainMenu extends BasicGameState {
+ 			if (!isTheme && !sameAudio)
+ 				previous.add(node.index);
+ 		}
+-		if (Options.isDynamicBackgroundEnabled() && !sameAudio && !MusicController.isThemePlaying())
++		if (Options.areSeasonalBackgroundsEnabled() && selectNextSeasonalBackground())
++			bgAlpha.setTime(0);
++		else if (Options.isDynamicBackgroundEnabled() && !sameAudio && !MusicController.isThemePlaying())
+ 			bgAlpha.setTime(0);
+ 		musicInfoProgress.setTime(0);
+ 	}
+@@ -1019,12 +1045,120 @@ public class MainMenu extends BasicGameState {
+ 			SongMenu menu = (SongMenu) game.getState(Opsu.STATE_SONGMENU);
+ 			menu.setFocus(BeatmapSetList.get().getBaseNode(previous.pop()), -1, true, false);
+ 			lastMeasureProgress = 0f;
+-			if (Options.isDynamicBackgroundEnabled())
++			if (Options.areSeasonalBackgroundsEnabled() && selectNextSeasonalBackground())
++				bgAlpha.setTime(0);
++			else if (Options.isDynamicBackgroundEnabled())
+ 				bgAlpha.setTime(0);
+ 		}
+ 		musicInfoProgress.setTime(0);
+ 	}
+ 
++	/**
++	 * Applies changes to the seasonal background option without requiring a restart.
++	 */
++	private void syncSeasonalBackgroundState() {
++		boolean enabled = Options.areSeasonalBackgroundsEnabled();
++		if (enabled) {
++			if (!seasonalBackgroundsEnabled || !seasonalBackgroundLoadAttempted) {
++				selectNextSeasonalBackground();
++				bgAlpha.setTime(0);
++			}
++		} else if (seasonalBackgroundsEnabled) {
++			releaseSeasonalBackground();
++			seasonalBackgroundLoadAttempted = false;
++		}
++		seasonalBackgroundsEnabled = enabled;
++	}
++
++	/**
++	 * Selects and loads another image from the seasonal background directory.
++	 * Only the selected image is kept in memory, so the directory has no hard image-count limit.
++	 * @return true if an image was loaded
++	 */
++	private boolean selectNextSeasonalBackground() {
++		seasonalBackgroundLoadAttempted = true;
++		File[] files = Options.getSeasonalBackgroundDir().listFiles();
++		if (files == null || files.length == 0) {
++			releaseSeasonalBackground();
++			return false;
++		}
++
++		List<File> images = new ArrayList<File>();
++		for (File file : files) {
++			if (!file.isFile())
++				continue;
++			String name = file.getName().toLowerCase(Locale.ROOT);
++			if (name.endsWith(".png") || name.endsWith(".jpg") ||
++			    name.endsWith(".jpeg") || name.endsWith(".bmp"))
++				images.add(file);
++		}
++		if (images.isEmpty()) {
++			releaseSeasonalBackground();
++			return false;
++		}
++
++		int index = (int) (Math.random() * images.size());
++		File nextFile = images.get(index);
++		if (images.size() > 1 && seasonalBackgroundFile != null &&
++		    nextFile.getAbsolutePath().equals(seasonalBackgroundFile.getAbsolutePath()))
++			nextFile = images.get((index + 1) % images.size());
++
++		try {
++			Image nextBackground = new Image(nextFile.getAbsolutePath());
++			releaseSeasonalBackground();
++			seasonalBackground = nextBackground;
++			seasonalBackgroundFile = nextFile;
++			return true;
++		} catch (SlickException e) {
++			Log.warn(String.format("Failed to load seasonal background image '%s'.", nextFile), e);
++			releaseSeasonalBackground();
++			return false;
++		}
++	}
++
++	/** Releases the current seasonal background image. */
++	private void releaseSeasonalBackground() {
++		if (seasonalBackground != null && !seasonalBackground.isDestroyed()) {
++			try {
++				seasonalBackground.destroy();
++			} catch (SlickException e) {
++				Log.warn("Failed to release seasonal background image.", e);
++			}
++		}
++		seasonalBackground = null;
++		seasonalBackgroundFile = null;
++	}
++
++	/**
++	 * Draws the current seasonal background, filling the screen while preserving aspect ratio.
++	 * @return true if a seasonal background was drawn
++	 */
++	private boolean drawSeasonalBackground(
++		int width, int height, float offsetX, float offsetY, float alpha
++	) {
++		if (!Options.areSeasonalBackgroundsEnabled() || seasonalBackground == null)
++			return false;
++
++		int imageWidth = seasonalBackground.getWidth();
++		int imageHeight = seasonalBackground.getHeight();
++		if (imageWidth <= 0 || imageHeight <= 0)
++			return false;
++
++		float scale = Math.max(width / (float) imageWidth, height / (float) imageHeight);
++		if (Options.isParallaxEnabled())
++			scale *= GameImage.PARALLAX_SCALE;
++		float drawWidth = imageWidth * scale;
++		float drawHeight = imageHeight * scale;
++		seasonalBackground.setAlpha(alpha);
++		seasonalBackground.draw(
++			(width - drawWidth) / 2f + offsetX,
++			(height - drawHeight) / 2f + offsetY,
++			drawWidth,
++			drawHeight
++		);
++		return true;
++	}
++
+ 	/**
+ 	 * Enters the song menu, or the downloads menu if no beatmaps are loaded.
+ 	 */
